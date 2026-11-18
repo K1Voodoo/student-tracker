@@ -17,6 +17,7 @@
     "productName": "Student Tracker",
     "files": [
       "src/**/*",
+      "build/icon.ico",
       "package.json"
     ],
     "directories": {
@@ -24,13 +25,15 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.png"
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "shortcutName": "Student Tracker"
     },
     "publish": [
