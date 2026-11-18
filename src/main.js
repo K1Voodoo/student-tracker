@@ -150,6 +150,7 @@ ipcMain.handle('backup:import', async () => {
 
 // ---------- Auto-update via GitHub Releases ----------
 function sendUpdate(status, info = {}) {
+  console.log('[update]', status, JSON.stringify(info));
   if (win && !win.isDestroyed()) win.webContents.send('update:status', { status, ...info });
 }
 
