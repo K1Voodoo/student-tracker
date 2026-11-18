@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Student Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="updateBanner" class="update-banner hidden">
+    <span id="updateText"></span>
+    <div class="update-actions">
+      <button id="updateAction" class="btn primary small"></button>
+      <button id="updateLater" class="btn small">Later</button>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <h1>Student Tracker</h1>
+    <div class="topbar-right">
+      <span id="studentCount" class="muted"></span>
+      <button id="settingsBtn" class="btn" title="Settings">⚙ Settings</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input id="search" type="search" placeholder="Search students (name, email, country, notes, …)" />
+    </div>
+    <button id="addStudentBtn" class="btn primary">+ Add student</button>
+  </div>
+
+  <main class="table-wrap">
+    <table id="grid">
+      <thead>
+        <tr>
+          <th class="col-name">Name</th>
+          <th class="col-level">Level</th>
+          <th>Needs</th>
+          <th>Recurring mistakes</th>
+          <th>Vocabulary (learned)</th>
+          <th>Vocabulary (to be learned)</th>
+          <th>Grammar covered</th>
+          <th class="col-count">Lesson count</th>
+          <th class="col-btn">Documents (completed)</th>
+          <th class="col-btn">Documents (to do)</th>
+          <th class="col-btn">Reports</th>
+        </tr>
+      </thead>
+      <tbody id="gridBody"></tbody>
+    </table>
+    <div id="emptyState" class="empty hidden"></div>
+  </main>
+
+  <!-- Popover for document / report lists -->
+  <div id="popover" class="popover hidden"></div>
+
+  <!-- Modal -->
+  <div id="modalBackdrop" class="backdrop hidden">
+    <div id="modal" class="modal"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

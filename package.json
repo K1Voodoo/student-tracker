@@ -1,0 +1,52 @@
+{
+  "name": "student-tracker",
+  "productName": "Student Tracker",
+  "version": "1.0.0",
+  "description": "Student records for language tutors: levels, needs, vocabulary, grammar, lessons, documents and reports.",
+  "main": "src/main.js",
+  "author": "Student Tracker",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "build": {
+    "appId": "com.tutor.studenttracker",
+    "productName": "Student Tracker",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Student Tracker"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "K1Voodoo",
+        "repo": "student-tracker",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "electron": "^45.3.4",
+    "electron-builder": "^26.18.0"
+  }
+}
