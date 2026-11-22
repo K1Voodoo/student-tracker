@@ -116,51 +116,81 @@ th.col-btn { min-width: 130px; }
 td { padding: 0; }
 td.col-name {
   position: sticky; left: 0; z-index: 2;
-  background: var(--panel);
 }
+
+/* Every row has the same fixed height; long content is cut off in the cell
+   and shown in full in the dropdown editor. */
+:root { --row-h: 78px; }
+tbody td {
+  height: var(--row-h);
+  background: color-mix(in srgb, var(--row, transparent) 22%, var(--panel));
+}
+tbody tr:hover td { background: color-mix(in srgb, var(--row, var(--text)) 32%, var(--panel)); }
+tbody tr:not([style*="--row"]):hover td { background: var(--panel-2); }
+td.active-cell { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .name-cell {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px; cursor: pointer; font-weight: 600; height: 100%;
+  padding: 0 12px; cursor: pointer; font-weight: 600;
+  height: var(--row-h); overflow: hidden;
 }
-.name-cell:hover { background: var(--panel-2); }
 .color-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 1px solid rgba(0,0,0,.15); }
 
 .text-cell {
-  padding: 10px;
-  min-height: 42px;
-  max-height: 120px;
+  padding: 8px 10px;
+  height: var(--row-h);
+  overflow: hidden;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.text-cell .clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
-  cursor: text;
-  line-height: 1.4;
 }
-.text-cell:hover { background: var(--panel-2); }
-td textarea.cell-editor, td input.cell-editor {
-  width: 100%; min-height: 90px; border-radius: 0; border: none;
-  outline: 2px solid var(--accent); resize: vertical; display: block;
+
+/* Dropdown editor (opens below the cell, like a context menu) */
+.dd-editor {
+  width: 100%; min-height: 160px; height: 220px; resize: vertical;
+  border: none; border-radius: 0; outline: none; display: block;
+  padding: 10px 12px; line-height: 1.45; background: var(--panel);
 }
-td input.cell-editor { min-height: 40px; }
+.dd-editor:focus { outline: none; }
+.dd-hint { font-size: 11px; color: var(--muted); margin-right: auto; align-self: center; }
+.menu-item {
+  display: block; width: 100%; text-align: left;
+  padding: 7px 12px; border: none; background: transparent; color: var(--text);
+  font: inherit; cursor: pointer; border-radius: 4px;
+}
+.menu-item:hover { background: var(--panel-2); }
+.menu-item.selected { font-weight: 600; color: var(--accent); }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 0; }
+.pop-body { padding: 10px 12px; overflow: auto; flex: 1; }
+.pop-body .form-grid { grid-template-columns: 120px 1fr; gap: 8px 10px; }
+.pop-body .info-grid { grid-template-columns: 130px 1fr; gap: 6px 12px; }
 
 /* Lesson counter */
-.count-cell { padding: 8px 10px; text-align: center; }
+.count-cell { padding: 6px 10px; text-align: center; vertical-align: middle; }
 .count-number {
   display: inline-block; min-width: 40px; padding: 4px 10px;
   border-radius: 6px; font-size: 17px; font-weight: 600; cursor: pointer;
 }
 .count-number:hover { background: var(--panel-2); }
-.count-edit { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.count-edit { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.count-edit .btn.small { padding: 2px 10px; }
 .count-row { display: flex; align-items: center; gap: 6px; }
 .count-row .count-value { min-width: 34px; font-size: 17px; font-weight: 600; text-align: center; }
 .round-btn {
-  width: 28px; height: 28px; border-radius: 50%;
+  width: 26px; height: 26px; border-radius: 50%;
   border: 1px solid var(--line); background: var(--panel); color: var(--text);
   cursor: pointer; font-size: 16px; line-height: 1;
 }
 .round-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-.btn-cell { padding: 8px 10px; }
+.btn-cell { padding: 8px 10px; vertical-align: middle; }
 .list-btn { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 8px; }
 .badge {
   background: var(--panel-2); border-radius: 10px; padding: 0 8px;
@@ -174,7 +204,7 @@ td input.cell-editor { min-height: 40px; }
 .popover {
   position: fixed; z-index: 50;
   width: 380px; max-height: 420px;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; overflow: hidden;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);

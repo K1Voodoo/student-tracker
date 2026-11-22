@@ -25,14 +25,18 @@ const PERSONAL_FIELDS = [
   { key: 'notes', label: 'Notes', type: 'textarea' }
 ];
 
+// Text columns before the lesson counter
 const TEXT_COLUMNS = [
-  { key: 'level', single: true },
-  { key: 'needs' },
-  { key: 'recurringMistakes' },
-  { key: 'vocabLearned' },
-  { key: 'vocabToLearn' },
-  { key: 'grammarCovered' }
+  { key: 'level', label: 'Level', level: true },
+  { key: 'needs', label: 'Needs' },
+  { key: 'recurringMistakes', label: 'Recurring mistakes' },
+  { key: 'vocabLearned', label: 'Vocabulary (learned)' },
+  { key: 'vocabToLearn', label: 'Vocabulary (to be learned)' },
+  { key: 'grammarCovered', label: 'Grammar covered' }
 ];
+const TODO_COLUMN = { key: 'todo', label: 'Documents (to do)' };
+
+const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
 const COLOR_SWATCHES = [
   '#3b6ef5', '#2e9d5b', '#d64545', '#e8912d', '#9b51e0',
@@ -88,9 +92,19 @@ function newStudent(name) {
     id: uid(), name, color: COLOR_SWATCHES[data.students.length % COLOR_SWATCHES.length],
     personal: {},
     level: '', needs: '', recurringMistakes: '', vocabLearned: '', vocabToLearn: '', grammarCovered: '',
-    lessonCount: 0, docsCompleted: [], docsTodo: [],
+    lessonCount: 0, docsCompleted: [], todo: '',
     createdAt: new Date().toISOString()
   };
+}
+
+// Older versions stored "to do" as a list of files; turn it into bullet text.
+function migrate(s) {
+  if (Array.isArray(s.docsTodo)) {
+    if (!s.todo && s.docsTodo.length) s.todo = s.docsTodo.map(d => '• ' + baseName(d.path)).join('\n');
+    delete s.docsTodo;
+  }
+  if (typeof s.todo !== 'string') s.todo = '';
+  if (!Array.isArray(s.docsCompleted)) s.docsCompleted = [];
 }
 
 // ======================================================================
@@ -114,6 +128,7 @@ function matchesSearch(s) {
 }
 
 function render() {
+  closePopover(false);
   const body = $('#gridBody');
   body.innerHTML = '';
   const list = data.students
@@ -135,26 +150,38 @@ function render() {
     `${list.length === data.students.length ? '' : list.length + ' of '}${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
 }
 
+function rowOf(s) { return document.querySelector(`tr[data-id="${s.id}"]`); }
+
+function rerenderRow(s) {
+  const tr = rowOf(s);
+  const fresh = renderRow(s);
+  if (tr) tr.replaceWith(fresh);
+  return fresh;
+}
+
 function renderRow(s) {
   const tr = el('tr', { 'data-id': s.id });
+  if (s.color) tr.style.setProperty('--row', s.color);
 
   // Name
-  tr.append(el('td', { class: 'col-name', style: { boxShadow: `inset 4px 0 0 ${s.color || 'transparent'}` } },
-    el('div', { class: 'name-cell', title: 'Show personal details', onclick: () => openStudentModal(s.id) },
-      el('span', { class: 'color-dot', style: { background: s.color || '#ccc' } }),
-      el('span', {}, s.name)
-    )
-  ));
+  const nameTd = el('td', { class: 'col-name' });
+  nameTd.append(el('div', { class: 'name-cell', title: 'Show personal details' },
+    el('span', { class: 'color-dot', style: { background: s.color || '#ccc' } }),
+    el('span', {}, s.name)));
+  nameTd.addEventListener('click', () => toggleDropdown(nameTd, () => openNameDropdown(s, nameTd)));
+  tr.append(nameTd);
 
-  // Text columns (Level, Needs, Mistakes, Vocab, Vocab, Grammar)
+  // Level, Needs, Mistakes, Vocab, Vocab, Grammar
   for (const col of TEXT_COLUMNS) tr.append(renderTextCell(s, col));
 
   // Lesson count
   tr.append(renderCountCell(s));
 
-  // Documents
+  // Documents (completed) – file list
   tr.append(renderListButtonCell(s, 'docsCompleted', 'Completed', (s.docsCompleted || []).length));
-  tr.append(renderListButtonCell(s, 'docsTodo', 'To do', (s.docsTodo || []).length));
+
+  // Documents (to do) – text dropdown
+  tr.append(renderTextCell(s, TODO_COLUMN));
 
   // Reports
   const reps = reportsCache[s.name] || [];
@@ -165,45 +192,12 @@ function renderRow(s) {
 
 function renderTextCell(s, col) {
   const val = s[col.key] || '';
-  const td = el('td');
-  const div = el('div', { class: 'text-cell', title: 'Click to edit' }, val || el('span', { class: 'muted' }, '—'));
-  div.addEventListener('click', () => startTextEdit(td, s, col));
-  td.append(div);
+  const td = el('td', { 'data-key': col.key });
+  td.append(el('div', { class: 'text-cell', title: val || 'Click to edit' },
+    el('div', { class: 'clamp' }, val || el('span', { class: 'muted' }, '—'))));
+  td.addEventListener('click', () => toggleDropdown(td, () =>
+    col.level ? openLevelDropdown(s, col, td) : openTextDropdown(s, col, td)));
   return td;
-}
-
-function startTextEdit(td, s, col) {
-  const original = s[col.key] || '';
-  const editor = col.single
-    ? el('input', { class: 'cell-editor', type: 'text', list: 'levelList', value: original })
-    : el('textarea', { class: 'cell-editor' });
-  if (!col.single) editor.value = original;
-
-  if (col.single && !$('#levelList')) {
-    const dl = el('datalist', { id: 'levelList' },
-      ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map(l => el('option', { value: l })));
-    document.body.append(dl);
-  }
-
-  let done = false;
-  const finish = async save => {
-    if (done) return;
-    done = true;
-    if (save && editor.value !== original) {
-      s[col.key] = editor.value.trim() ? editor.value : '';
-      await persist();
-    }
-    td.replaceWith(renderTextCell(s, col));
-  };
-  editor.addEventListener('blur', () => finish(true));
-  editor.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-    if (e.key === 'Enter' && (col.single || e.ctrlKey)) { e.preventDefault(); finish(true); }
-  });
-  td.innerHTML = '';
-  td.append(editor);
-  editor.focus();
-  if (!col.single) editor.setSelectionRange(editor.value.length, editor.value.length);
 }
 
 function renderCountCell(s) {
@@ -239,11 +233,11 @@ function renderCountCell(s) {
     td.append(el('span', {
       class: 'count-number', title: 'Click to change',
       onclick: () => {
-        // close any other open counter
+        closePopover(true);
         if (editingCount && editingCount !== s.id) {
-          const other = document.querySelector(`tr[data-id="${editingCount}"]`);
+          const other = getStudent(editingCount);
           editingCount = null;
-          if (other) { const os = getStudent(other.dataset.id); other.replaceWith(renderRow(os)); }
+          if (other) rerenderRow(other);
         }
         editingCount = s.id;
         pendingCount = s.lessonCount || 0;
@@ -255,217 +249,205 @@ function renderCountCell(s) {
 }
 
 function renderListButtonCell(s, kind, label, count) {
-  const icon = kind === 'reports' ? '📊' : kind === 'docsCompleted' ? '✅' : '📝';
+  const icon = kind === 'reports' ? '📊' : '✅';
   const btn = el('button', { class: 'btn list-btn' },
     el('span', {}, `${icon} ${label}`),
     el('span', { class: 'badge' + (count ? ' has' : '') }, count)
   );
-  btn.addEventListener('click', e => {
-    e.stopPropagation();
-    if (kind === 'reports') openReportsPopover(s, btn);
-    else openDocsPopover(s, kind, btn);
-  });
-  return el('td', { class: 'btn-cell' }, btn);
+  const td = el('td', { class: 'btn-cell' }, btn);
+  btn.addEventListener('click', () => toggleDropdown(td, () =>
+    kind === 'reports' ? openReportsDropdown(s, td) : openDocsDropdown(s, td)));
+  return td;
 }
 
 // ======================================================================
-// Popovers (document lists & reports)
+// Dropdown (one at a time, always opens DOWN below its cell, floats over the
+// table like a context menu – the cell / row never changes size)
 // ======================================================================
-let popoverAnchor = null;
+let pop = { anchor: null, onClose: null };
 
-function closePopover() {
-  $('#popover').classList.add('hidden');
-  popoverAnchor = null;
+function toggleDropdown(anchor, open) {
+  if (pop.anchor === anchor) { closePopover(true); return; }
+  closePopover(true);
+  open();
 }
 
-function positionPopover(anchor) {
-  const pop = $('#popover');
-  pop.classList.remove('hidden');
+function closePopover(save = true) {
+  const p = $('#popover');
+  const { anchor, onClose } = pop;
+  pop = { anchor: null, onClose: null };
+  p.classList.add('hidden');
+  p.innerHTML = '';
+  if (anchor) anchor.classList.remove('active-cell');
+  if (onClose) onClose(save);
+}
+
+function showDropdown(anchor, nodes, { width = 380, onClose = null } = {}) {
+  const p = $('#popover');
+  p.innerHTML = '';
+  p.append(...nodes);
+  pop = { anchor, onClose };
+  anchor.classList.add('active-cell');
+  placeDropdown(anchor, width);
+}
+
+function placeDropdown(anchor, width) {
+  const p = $('#popover');
   const r = anchor.getBoundingClientRect();
-  const pw = pop.offsetWidth, ph = pop.offsetHeight;
-  let left = Math.min(r.left, window.innerWidth - pw - 10);
-  left = Math.max(10, left);
-  let top = r.bottom + 6;
-  if (top + ph > window.innerHeight - 10) top = Math.max(10, r.top - ph - 6);
-  pop.style.left = left + 'px';
-  pop.style.top = top + 'px';
+  const w = Math.min(Math.max(width, r.width), window.innerWidth - 20);
+  p.style.width = w + 'px';
+  p.style.left = Math.max(10, Math.min(r.left, window.innerWidth - w - 10)) + 'px';
+  const top = r.bottom - 1;
+  p.style.top = top + 'px';
+  p.style.maxHeight = Math.max(160, window.innerHeight - top - 10) + 'px';
+  p.classList.remove('hidden');
 }
 
-async function openDocsPopover(s, kind, anchor) {
-  if (popoverAnchor === anchor) { closePopover(); return; }
-  popoverAnchor = anchor;
-  const pop = $('#popover');
-  const list = s[kind] || (s[kind] = []);
-  const title = kind === 'docsCompleted' ? 'Documents — completed' : 'Documents — to do';
-  const exists = list.length ? await window.api.filesExist(list.map(d => d.path)) : [];
-
-  const ul = el('ul', { class: 'pop-list' });
-  list.forEach((doc, i) => {
-    const li = el('li', { class: exists[i] ? '' : 'missing', title: doc.path },
-      el('span', { class: 'file-link', onclick: () => openFile(doc.path) }, baseName(doc.path)),
-      el('span', { class: 'file-date' }, fmtDate(doc.added)),
-      el('button', { class: 'icon-btn', title: 'Show in folder', onclick: () => window.api.revealFile(doc.path) }, '📁'),
-      kind === 'docsTodo'
-        ? el('button', { class: 'icon-btn', title: 'Mark as completed', onclick: () => moveDoc(s, kind, 'docsCompleted', i, anchor) }, '✔')
-        : el('button', { class: 'icon-btn', title: 'Move back to “to do”', onclick: () => moveDoc(s, kind, 'docsTodo', i, anchor) }, '↩'),
-      el('button', { class: 'icon-btn', title: 'Remove from list (file is not deleted)', onclick: () => removeDoc(s, kind, i, anchor) }, '✕')
-    );
-    ul.append(li);
-  });
-
-  pop.innerHTML = '';
-  pop.append(
-    el('div', { class: 'pop-head' }, el('strong', {}, `${title} · ${s.name}`),
-      el('button', { class: 'icon-btn', onclick: closePopover }, '✕')),
-    list.length ? ul : el('div', { class: 'pop-empty' }, 'No documents yet.'),
-    el('div', { class: 'pop-foot' },
-      el('button', { class: 'btn primary small', onclick: () => browseDocs(s, kind, anchor) }, '📂 Browse…'))
-  );
-  positionPopover(anchor);
-}
-
-async function refreshDocsPopover(s, kind, anchor) {
-  await persist();
-  // re-render row (updates badge), then reopen popover on the new button
-  const tr = document.querySelector(`tr[data-id="${s.id}"]`);
-  const idx = kind === 'docsCompleted' ? 0 : 1;
-  if (tr) {
-    const newRow = renderRow(s);
-    tr.replaceWith(newRow);
-    const btns = newRow.querySelectorAll('.list-btn');
-    popoverAnchor = null;
-    await openDocsPopover(s, kind, btns[idx]);
-  } else {
-    popoverAnchor = null;
-    await openDocsPopover(s, kind, anchor);
-  }
-}
-
-async function browseDocs(s, kind, anchor) {
-  const paths = await window.api.pickFiles();
-  if (!paths.length) return;
-  const list = s[kind] || (s[kind] = []);
-  let added = 0;
-  for (const p of paths) {
-    if (!list.some(d => d.path.toLowerCase() === p.toLowerCase())) {
-      list.push({ path: p, added: Date.now() });
-      added++;
-    }
-  }
-  toast(added ? `Added ${added} document${added > 1 ? 's' : ''}` : 'Already in the list');
-  await refreshDocsPopover(s, kind, anchor);
-}
-
-async function moveDoc(s, from, to, i, anchor) {
-  const [doc] = s[from].splice(i, 1);
-  (s[to] || (s[to] = [])).push({ ...doc, added: Date.now() });
-  toast(to === 'docsCompleted' ? 'Moved to completed' : 'Moved back to “to do”');
-  await refreshDocsPopover(s, from, anchor);
-}
-
-async function removeDoc(s, kind, i, anchor) {
-  s[kind].splice(i, 1);
-  await refreshDocsPopover(s, kind, anchor);
-}
-
-async function openFile(p) {
-  const err = await window.api.openFile(p);
-  if (err) toast(err);
-}
-
-async function scanAllReports() {
-  const { reportsFolder, reportsPattern } = data.settings;
-  if (!reportsFolder) { reportsCache = {}; return; }
-  reportsCache = await window.api.scanReports({
-    folder: reportsFolder, pattern: reportsPattern, names: data.students.map(s => s.name)
-  });
-}
-
-async function openReportsPopover(s, anchor) {
-  if (popoverAnchor === anchor) { closePopover(); return; }
-  popoverAnchor = anchor;
-  const pop = $('#popover');
-  const { reportsFolder, reportsPattern } = data.settings;
-
-  pop.innerHTML = '';
-  pop.append(el('div', { class: 'pop-head' }, el('strong', {}, `Reports · ${s.name}`),
-    el('button', { class: 'icon-btn', onclick: closePopover }, '✕')));
-
-  if (!reportsFolder) {
-    pop.append(
-      el('div', { class: 'pop-empty' }, 'No reports folder selected yet.'),
-      el('div', { class: 'pop-foot' }, el('button', { class: 'btn primary small', onclick: () => { closePopover(); openSettings(); } }, '⚙ Open settings'))
-    );
-    positionPopover(anchor);
-    return;
-  }
-
-  const res = await window.api.scanReports({ folder: reportsFolder, pattern: reportsPattern, names: [s.name] });
-  const reps = res[s.name] || [];
-  reportsCache[s.name] = reps;
-
-  const ul = el('ul', { class: 'pop-list' },
-    reps.map(r => el('li', { title: r.path },
-      el('span', { class: 'file-link', onclick: () => openFile(r.path) }, baseName(r.path)),
-      el('span', { class: 'file-date' }, fmtDate(r.mtime)),
-      el('button', { class: 'icon-btn', title: 'Show in folder', onclick: () => window.api.revealFile(r.path) }, '📁')
-    )));
-
-  pop.append(
-    el('div', { class: 'pop-sub' }, `Folder: ${reportsFolder} · Pattern: ${reportsPattern || '*{name}*'}`),
-    reps.length ? ul : el('div', { class: 'pop-empty' }, 'No reports found for this student.'),
-    el('div', { class: 'pop-foot' },
-      el('button', {
-        class: 'btn small', onclick: async () => {
-          popoverAnchor = null;
-          const tr = document.querySelector(`tr[data-id="${s.id}"]`);
-          const newRow = renderRow(s);
-          if (tr) tr.replaceWith(newRow);
-          await openReportsPopover(s, newRow.querySelectorAll('.list-btn')[2]);
-        }
-      }, '⟳ Refresh'))
-  );
-  positionPopover(anchor);
-
-  // keep the badge in sync
-  const badge = anchor.querySelector('.badge');
-  if (badge) { badge.textContent = reps.length; badge.classList.toggle('has', reps.length > 0); }
+function popHead(title) {
+  return el('div', { class: 'pop-head' }, el('strong', {}, title),
+    el('button', { class: 'icon-btn', title: 'Close', onclick: () => closePopover(true) }, '✕'));
 }
 
 document.addEventListener('mousedown', e => {
-  const pop = $('#popover');
-  if (pop.classList.contains('hidden')) return;
-  if (pop.contains(e.target) || (popoverAnchor && popoverAnchor.contains(e.target))) return;
-  closePopover();
+  const p = $('#popover');
+  if (p.classList.contains('hidden')) return;
+  if (p.contains(e.target) || (pop.anchor && pop.anchor.contains(e.target))) return;
+  closePopover(true);
 });
-window.addEventListener('resize', closePopover);
-$('.table-wrap') && $('.table-wrap').addEventListener('scroll', closePopover);
+window.addEventListener('resize', () => closePopover(true));
+$('.table-wrap').addEventListener('scroll', () => {
+  if (pop.anchor && !$('#popover').classList.contains('hidden')) placeDropdown(pop.anchor, $('#popover').offsetWidth);
+});
 
-// ======================================================================
-// Modal helpers
-// ======================================================================
-function openModal(...content) {
-  closePopover();
-  const m = $('#modal');
-  m.innerHTML = '';
-  m.append(...content);
-  $('#modalBackdrop').classList.remove('hidden');
+// ---------- Text field editor with bullet points ----------
+function bulletize(textarea) {
+  // "- " at the start of a line becomes "• " (same length, so the cursor stays put)
+  textarea.addEventListener('input', () => {
+    const v = textarea.value;
+    const nv = v.replace(/(^|\n)- /g, '$1• ');
+    if (nv !== v) {
+      const a = textarea.selectionStart, b = textarea.selectionEnd;
+      textarea.value = nv;
+      textarea.setSelectionRange(a, b);
+    }
+  });
+  // Lists: a line starting with "• " (bullet) or "1. " (number) is a list item.
+  //  Enter      -> new item ("• " or the next number)
+  //  Backspace  -> right after the marker, removes the whole marker and ends the list
+  const MARKER = /^(• |(\d+)\. )/;
+  textarea.addEventListener('keydown', e => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const pos = textarea.selectionStart;
+    if (pos !== textarea.selectionEnd) return;
+    const v = textarea.value;
+    const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+    const lineEndIdx = v.indexOf('\n', pos);
+    const lineEnd = lineEndIdx === -1 ? v.length : lineEndIdx;
+    const line = v.slice(lineStart, lineEnd);
+    const m = line.match(MARKER);
+    if (!m) return;
+
+    if (e.key === 'Backspace' && pos === lineStart + m[0].length) {
+      e.preventDefault();
+      textarea.setRangeText('', lineStart, pos, 'end');
+      if (m[2]) renumberFrom(textarea, lineStart);
+      return;
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (pos < lineStart + m[0].length) return; // cursor inside the marker: plain Enter
+      e.preventDefault();
+      const next = m[2] ? `${parseInt(m[2], 10) + 1}. ` : '• ';
+      textarea.setRangeText('\n' + next, pos, pos, 'end');
+      if (m[2]) renumberFrom(textarea, textarea.selectionStart);
+    }
+  });
 }
-function closeModal() { $('#modalBackdrop').classList.add('hidden'); }
-$('#modalBackdrop').addEventListener('mousedown', e => { if (e.target.id === 'modalBackdrop') closeModal(); });
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    if (!$('#modalBackdrop').classList.contains('hidden')) closeModal();
-    else closePopover();
-  }
-});
 
-// ======================================================================
-// Student details (view / edit / add)
-// ======================================================================
-function openStudentModal(id) {
-  const s = getStudent(id);
-  if (!s) return;
+// After inserting/removing a numbered item, renumber the numbered lines that
+// directly follow the line at `index`, so the list stays 1, 2, 3, …
+function renumberFrom(textarea, index) {
+  const v = textarea.value;
+  const lineStart = v.lastIndexOf('\n', index - 1) + 1;
+  const lines = v.slice(lineStart).split('\n');
+  const first = lines[0].match(/^(\d+)\. /);
+  let n = 0;
+  if (first) n = parseInt(first[1], 10);
+  else if (lineStart > 0) {
+    // the line is no longer numbered: continue from the numbered line above it
+    const prevStart = v.lastIndexOf('\n', lineStart - 2) + 1;
+    const prev = v.slice(prevStart, lineStart - 1).match(/^(\d+)\. /);
+    if (prev) n = parseInt(prev[1], 10);
+  }
+  for (let i = 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(\d+)\. /);
+    if (!m) break;
+    n++;
+    lines[i] = `${n}. ` + lines[i].slice(m[0].length);
+  }
+  const nv = v.slice(0, lineStart) + lines.join('\n');
+  if (nv !== v) {
+    const a = textarea.selectionStart;
+    textarea.value = nv;
+    textarea.setSelectionRange(a, a);
+  }
+}
+
+function openTextDropdown(s, col, td) {
+  const original = s[col.key] || '';
+  const ta = el('textarea', { class: 'dd-editor', placeholder: 'Type here…  Start a line with "- " for a bullet point.' });
+  ta.value = original;
+  bulletize(ta);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); closePopover(true); }
+  });
+
+  showDropdown(td, [
+    popHead(`${col.label} · ${s.name}`),
+    ta,
+    el('div', { class: 'pop-foot' },
+      el('span', { class: 'dd-hint' }, '"- " bullets · "1. " numbers · Backspace ends list · Ctrl+Enter save · Esc cancel'),
+      el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
+      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
+  ], {
+    width: 380,
+    onClose: async save => {
+      const v = ta.value.replace(/\s+$/, '');
+      if (!save || v === original) return;
+      s[col.key] = v;
+      await persist();
+      const cell = rowOf(s) && rowOf(s).querySelector(`td[data-key="${col.key}"]`);
+      if (cell) cell.replaceWith(renderTextCell(s, col));
+    }
+  });
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+
+// ---------- Level menu ----------
+function openLevelDropdown(s, col, td) {
+  const setLevel = async v => {
+    s.level = v;
+    closePopover(false);
+    await persist();
+    const cell = rowOf(s) && rowOf(s).querySelector(`td[data-key="level"]`);
+    if (cell) cell.replaceWith(renderTextCell(s, col));
+  };
+  const custom = el('input', { type: 'text', placeholder: 'Other (e.g. B1+)…', value: LEVELS.includes(s.level) ? '' : (s.level || ''), style: { width: '100%' } });
+  custom.addEventListener('keydown', e => { if (e.key === 'Enter') setLevel(custom.value.trim()); });
+
+  showDropdown(td, [
+    el('div', { class: 'pop-body', style: { padding: '6px' } },
+      LEVELS.map(l => el('button', { class: 'menu-item' + (s.level === l ? ' selected' : ''), onclick: () => setLevel(l) }, l)),
+      el('div', { class: 'menu-sep' }),
+      el('div', { style: { padding: '4px 6px' } }, custom),
+      el('div', { class: 'menu-sep' }),
+      el('button', { class: 'menu-item muted', onclick: () => setLevel('') }, 'Clear level'))
+  ], { width: 180 });
+}
+
+// ---------- Name: personal details (view / edit) ----------
+function openNameDropdown(s, td) {
   const p = s.personal || {};
   const grid = el('div', { class: 'info-grid' });
   grid.append(el('div', { class: 'label' }, 'Lessons'), el('div', { class: 'value' }, s.lessonCount || 0));
@@ -481,16 +463,37 @@ function openStudentModal(id) {
     grid.append(el('div', { class: 'label' }, f.label), el('div', { class: 'value' }, valueNode));
   }
 
-  openModal(
-    el('div', { class: 'modal-head' },
-      el('h2', {}, el('span', { class: 'color-dot', style: { background: s.color, width: '16px', height: '16px' } }), s.name),
-      el('button', { class: 'icon-btn', onclick: closeModal }, '✕')),
-    el('div', { class: 'modal-body' }, grid),
-    el('div', { class: 'modal-foot' },
-      el('div', { class: 'right' },
-        el('button', { class: 'btn', onclick: closeModal }, 'Close'),
-        el('button', { class: 'btn primary', onclick: () => openStudentForm(s) }, '✎ Edit')))
-  );
+  showDropdown(td, [
+    popHead(s.name),
+    el('div', { class: 'pop-body' }, grid),
+    el('div', { class: 'pop-foot' },
+      el('button', { class: 'btn primary small', onclick: () => openNameEdit(s, td) }, '✎ Edit'))
+  ], { width: 440 });
+}
+
+function openNameEdit(s, td) {
+  const form = buildStudentForm(s, false, {
+    onSave: async () => {
+      await persist();
+      await scanAllReports();
+      closePopover(false);
+      const fresh = rerenderRow(s);
+      const nameTd = fresh.querySelector('td.col-name');
+      openNameDropdown(s, nameTd);
+      toast('Saved');
+    },
+    onCancel: () => { closePopover(false); openNameDropdown(s, rowOf(s).querySelector('td.col-name')); },
+    onDelete: async () => {
+      closePopover(false);
+      data.students = data.students.filter(o => o.id !== s.id);
+      await persist();
+      render();
+      toast(`${s.name} deleted`);
+    }
+  });
+  closePopover(false);
+  showDropdown(td, [popHead(`Edit · ${s.name}`), el('div', { class: 'pop-body' }, form.body), form.foot], { width: 460 });
+  form.focus();
 }
 
 function colorPicker(initial) {
@@ -513,25 +516,23 @@ function colorPicker(initial) {
   return { node: wrap, get: () => value };
 }
 
-function openStudentForm(existing) {
-  const isNew = !existing;
-  const s = existing || newStudent('');
+// Shared form for "Add student" (modal) and "Edit" (dropdown)
+function buildStudentForm(s, isNew, { onSave, onCancel, onDelete }) {
   const p = s.personal || {};
   const inputs = {};
-
   const nameInput = el('input', { type: 'text', value: s.name, placeholder: 'Full name' });
   const picker = colorPicker(s.color);
 
-  const form = el('div', { class: 'form-grid' },
+  const body = el('div', { class: 'form-grid' },
     el('label', {}, 'Name *'), nameInput,
-    el('label', {}, 'Color'), picker.node
+    el('label', {}, 'Row color'), picker.node
   );
   for (const f of PERSONAL_FIELDS) {
     let input;
     if (f.type === 'textarea') { input = el('textarea'); input.value = p[f.key] || ''; }
     else input = el('input', { type: f.type, value: p[f.key] || '' });
     inputs[f.key] = input;
-    form.append(el('label', {}, f.label), input);
+    body.append(el('label', {}, f.label), input);
   }
 
   const save = async () => {
@@ -546,39 +547,170 @@ function openStudentForm(existing) {
       const v = inputs[f.key].value.trim();
       if (v) s.personal[f.key] = v;
     }
-    if (isNew) data.students.push(s);
-    await persist();
-    await scanAllReports();
-    render();
-    if (isNew) { closeModal(); toast(`${name} added`); }
-    else openStudentModal(s.id);
+    await onSave();
   };
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
 
-  const foot = el('div', { class: 'modal-foot' });
+  const foot = el('div', { class: isNew ? 'modal-foot' : 'pop-foot' });
   if (!isNew) {
     foot.append(el('button', {
-      class: 'btn danger', onclick: async () => {
-        if (!confirm(`Delete ${s.name} and all of their data from the tracker?\n(Your document files on disk are NOT deleted.)`)) return;
-        data.students = data.students.filter(o => o.id !== s.id);
-        await persist();
-        closeModal();
-        render();
-        toast(`${s.name} deleted`);
+      class: 'btn danger small', style: { marginRight: 'auto' }, onclick: () => {
+        if (confirm(`Delete ${s.name} and all of their data from the tracker?\n(Your document files on disk are NOT deleted.)`)) onDelete();
       }
-    }, '🗑 Delete student'));
+    }, '🗑 Delete'));
   }
-  foot.append(el('div', { class: 'right' },
-    el('button', { class: 'btn', onclick: () => isNew ? closeModal() : openStudentModal(s.id) }, 'Cancel'),
-    el('button', { class: 'btn primary', onclick: save }, isNew ? 'Add student' : 'Save')));
+  const btnCls = isNew ? 'btn' : 'btn small';
+  const right = el('div', { class: 'right', style: { display: 'flex', gap: '8px', marginLeft: 'auto' } },
+    el('button', { class: btnCls, onclick: onCancel }, 'Cancel'),
+    el('button', { class: btnCls + ' primary', onclick: save }, isNew ? 'Add student' : 'Save'));
+  foot.append(right);
 
+  return { body, foot, focus: () => nameInput.focus() };
+}
+
+// ---------- Documents (completed): file list with Browse ----------
+async function openDocsDropdown(s, td) {
+  const list = s.docsCompleted || (s.docsCompleted = []);
+  const exists = list.length ? await window.api.filesExist(list.map(d => d.path)) : [];
+
+  const ul = el('ul', { class: 'pop-list' });
+  list.forEach((doc, i) => {
+    ul.append(el('li', { class: exists[i] ? '' : 'missing', title: doc.path },
+      el('span', { class: 'file-link', onclick: () => openFile(doc.path) }, baseName(doc.path)),
+      el('span', { class: 'file-date' }, fmtDate(doc.added)),
+      el('button', { class: 'icon-btn', title: 'Show in folder', onclick: () => window.api.revealFile(doc.path) }, '📁'),
+      el('button', { class: 'icon-btn', title: 'Remove from list (file is not deleted)', onclick: () => removeDoc(s, i) }, '✕')
+    ));
+  });
+
+  showDropdown(td, [
+    popHead(`Documents — completed · ${s.name}`),
+    list.length ? ul : el('div', { class: 'pop-empty' }, 'No documents yet.'),
+    el('div', { class: 'pop-foot' },
+      el('button', { class: 'btn primary small', onclick: () => browseDocs(s) }, '📂 Browse…'))
+  ], { width: 380 });
+}
+
+async function reopenDocs(s) {
+  await persist();
+  closePopover(false);
+  const fresh = rerenderRow(s);
+  await openDocsDropdown(s, fresh.querySelectorAll('.btn-cell')[0]);
+}
+
+async function browseDocs(s) {
+  const paths = await window.api.pickFiles();
+  if (!paths.length) return;
+  let added = 0;
+  for (const p of paths) {
+    if (!s.docsCompleted.some(d => d.path.toLowerCase() === p.toLowerCase())) {
+      s.docsCompleted.push({ path: p, added: Date.now() });
+      added++;
+    }
+  }
+  toast(added ? `Added ${added} document${added > 1 ? 's' : ''}` : 'Already in the list');
+  await reopenDocs(s);
+}
+
+async function removeDoc(s, i) {
+  s.docsCompleted.splice(i, 1);
+  await reopenDocs(s);
+}
+
+async function openFile(p) {
+  const err = await window.api.openFile(p);
+  if (err) toast(err);
+}
+
+// ---------- Reports ----------
+async function scanAllReports() {
+  const { reportsFolder, reportsPattern } = data.settings;
+  if (!reportsFolder) { reportsCache = {}; return; }
+  reportsCache = await window.api.scanReports({
+    folder: reportsFolder, pattern: reportsPattern, names: data.students.map(s => s.name)
+  });
+}
+
+async function openReportsDropdown(s, td) {
+  const { reportsFolder, reportsPattern } = data.settings;
+
+  if (!reportsFolder) {
+    showDropdown(td, [
+      popHead(`Reports · ${s.name}`),
+      el('div', { class: 'pop-empty' }, 'No reports folder selected yet.'),
+      el('div', { class: 'pop-foot' }, el('button', { class: 'btn primary small', onclick: () => { closePopover(false); openSettings(); } }, '⚙ Open settings'))
+    ]);
+    return;
+  }
+
+  const res = await window.api.scanReports({ folder: reportsFolder, pattern: reportsPattern, names: [s.name] });
+  const reps = res[s.name] || [];
+  reportsCache[s.name] = reps;
+
+  const ul = el('ul', { class: 'pop-list' },
+    reps.map(r => el('li', { title: r.path },
+      el('span', { class: 'file-link', onclick: () => openFile(r.path) }, baseName(r.path)),
+      el('span', { class: 'file-date' }, fmtDate(r.mtime)),
+      el('button', { class: 'icon-btn', title: 'Show in folder', onclick: () => window.api.revealFile(r.path) }, '📁')
+    )));
+
+  showDropdown(td, [
+    popHead(`Reports · ${s.name}`),
+    el('div', { class: 'pop-sub' }, `Folder: ${reportsFolder} · Pattern: ${reportsPattern || '*{name}*'}`),
+    reps.length ? ul : el('div', { class: 'pop-empty' }, 'No reports found for this student.'),
+    el('div', { class: 'pop-foot' },
+      el('button', {
+        class: 'btn small', onclick: async () => {
+          closePopover(false);
+          const fresh = rerenderRow(s);
+          await openReportsDropdown(s, fresh.querySelectorAll('.btn-cell')[1]);
+        }
+      }, '⟳ Refresh'))
+  ]);
+
+  const badge = td.querySelector('.badge');
+  if (badge) { badge.textContent = reps.length; badge.classList.toggle('has', reps.length > 0); }
+}
+
+// ======================================================================
+// Modal helpers
+// ======================================================================
+function openModal(...content) {
+  closePopover(true);
+  const m = $('#modal');
+  m.innerHTML = '';
+  m.append(...content);
+  $('#modalBackdrop').classList.remove('hidden');
+}
+function closeModal() { $('#modalBackdrop').classList.add('hidden'); }
+$('#modalBackdrop').addEventListener('mousedown', e => { if (e.target.id === 'modalBackdrop') closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (!$('#modalBackdrop').classList.contains('hidden')) closeModal();
+    else closePopover(false);
+  }
+});
+
+function openAddStudent() {
+  const s = newStudent('');
+  const form = buildStudentForm(s, true, {
+    onSave: async () => {
+      data.students.push(s);
+      await persist();
+      await scanAllReports();
+      render();
+      closeModal();
+      toast(`${s.name} added`);
+    },
+    onCancel: closeModal
+  });
   openModal(
-    el('div', { class: 'modal-head' }, el('h2', {}, isNew ? 'Add student' : `Edit · ${s.name}`),
+    el('div', { class: 'modal-head' }, el('h2', {}, 'Add student'),
       el('button', { class: 'icon-btn', onclick: closeModal }, '✕')),
-    el('div', { class: 'modal-body' }, form),
-    foot
+    el('div', { class: 'modal-body' }, form.body),
+    form.foot
   );
-  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
-  nameInput.focus();
+  form.focus();
 }
 
 // ======================================================================
@@ -597,7 +729,7 @@ async function openSettings() {
     return [el('label', {}, label), el('div', { class: 'color-row' }, inp, code)];
   };
 
-  const folderInput = el('input', { type: 'text', value: s.reportsFolder || '', placeholder: 'No folder selected' , readonly: true });
+  const folderInput = el('input', { type: 'text', value: s.reportsFolder || '', placeholder: 'No folder selected', readonly: true });
   const patternInput = el('input', { type: 'text', value: s.reportsPattern || '*{name}*' });
   patternInput.addEventListener('change', async () => {
     s.reportsPattern = patternInput.value.trim() || '*{name}*';
@@ -669,6 +801,7 @@ async function openSettings() {
                 if (!Array.isArray(imp.students)) throw new Error('Not a Student Tracker backup');
                 if (!confirm(`Replace current data with the backup (${imp.students.length} students)?`)) return;
                 data = { students: imp.students, settings: { ...DEFAULT_SETTINGS, ...(imp.settings || {}) } };
+                data.students.forEach(migrate);
                 await persist(); applyTheme(); await scanAllReports(); render(); closeModal();
                 toast('Backup imported');
               } catch (e) { toast('Import failed: ' + e.message); }
@@ -731,7 +864,7 @@ $('#updateLater').addEventListener('click', () => { updateDismissed = true; $('#
 // Wire up & start
 // ======================================================================
 $('#search').addEventListener('input', e => { searchTerm = e.target.value.trim(); render(); });
-$('#addStudentBtn').addEventListener('click', () => openStudentForm(null));
+$('#addStudentBtn').addEventListener('click', openAddStudent);
 $('#settingsBtn').addEventListener('click', openSettings);
 
 // Re-scan reports whenever the window gets focus (picks up newly saved report files)
@@ -740,12 +873,13 @@ window.addEventListener('focus', async () => {
   if (Date.now() - focusScan < 5000 || !data.settings.reportsFolder) return;
   focusScan = Date.now();
   await scanAllReports();
-  if (!editingCount && !document.querySelector('.cell-editor') && $('#popover').classList.contains('hidden')) render();
+  if (!editingCount && $('#popover').classList.contains('hidden') && $('#modalBackdrop').classList.contains('hidden')) render();
 });
 
 (async function init() {
   data = await window.api.loadData();
   data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+  data.students.forEach(migrate);
   applyTheme();
   await scanAllReports();
   render();
