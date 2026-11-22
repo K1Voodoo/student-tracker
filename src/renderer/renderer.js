@@ -365,10 +365,24 @@ function placeDropdown(anchor, width) {
   const w = Math.min(Math.max(width, r.width), window.innerWidth - 20);
   p.style.width = w + 'px';
   p.style.left = Math.max(10, Math.min(r.left, window.innerWidth - w - 10)) + 'px';
-  const top = r.bottom - 1;
-  p.style.top = top + 'px';
-  p.style.maxHeight = Math.max(160, window.innerHeight - top - 10) + 'px';
+  // Measure the popover's natural height (capped by the CSS max-height).
+  p.style.top = '0px';
+  p.style.bottom = 'auto';
+  p.style.maxHeight = '';
   p.classList.remove('hidden');
+  const want = p.offsetHeight;
+  const below = window.innerHeight - r.bottom - 10;
+  const above = r.top - 10;
+  // Open below if it fits there; otherwise above if it fits (or has more room).
+  if (want <= below || below >= above) {
+    p.style.top = (r.bottom - 1) + 'px';
+    p.style.maxHeight = Math.max(160, below + 1) + 'px';
+  } else {
+    // Anchor by the bottom edge so the popover grows upward, away from the cell.
+    p.style.top = 'auto';
+    p.style.bottom = (window.innerHeight - r.top - 1) + 'px';
+    p.style.maxHeight = Math.max(160, above + 1) + 'px';
+  }
 }
 
 function popHead(title) {
