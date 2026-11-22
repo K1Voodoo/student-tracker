@@ -1,7 +1,7 @@
 {
   "name": "student-tracker",
   "productName": "Student Tracker",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Student records for language tutors: levels, needs, vocabulary, grammar, lessons, documents and reports.",
   "main": "src/main.js",
   "author": "Student Tracker",
