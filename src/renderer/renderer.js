@@ -33,12 +33,13 @@ const TEXT_COLUMNS = [
   { key: 'vocabLearned', label: 'Vocabulary (learned)' },
   { key: 'vocabToLearn', label: 'Vocabulary (to be learned)' },
   { key: 'grammarCovered', label: 'Grammar covered' },
-  { key: 'conversation', label: 'Conversation' }
+  { key: 'conversation', label: 'Conversation' },
+  { key: 'homework', label: 'Homework' }
 ];
 
 // Fields that hold formatted text (HTML from the rich text editor)
 const RICH_KEYS = ['needs', 'recurringMistakes', 'vocabLearned', 'vocabToLearn', 'grammarCovered',
-  'conversation', 'todo', 'docsText', 'reportsText'];
+  'conversation', 'homework', 'todo', 'docsText', 'reportsText'];
 const TODO_COLUMN = { key: 'todo', label: 'To do' };
 
 const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
@@ -115,6 +116,7 @@ function migrate(s) {
   if (typeof s.docsText !== 'string') s.docsText = '';
   if (typeof s.reportsText !== 'string') s.reportsText = '';
   if (typeof s.conversation !== 'string') s.conversation = '';
+  if (typeof s.homework !== 'string') s.homework = '';
   // Older versions stored plain text; convert once to formatted text (HTML)
   if (!s.rich) {
     for (const k of RICH_KEYS) s[k] = plainToHtml(s[k] || '');
@@ -320,8 +322,8 @@ function renderFileCell(s, kind) {
   const val = s[textKey] || '';
   const label = isReports ? (count === 1 ? 'report' : 'reports') : (count === 1 ? 'file' : 'files');
   const td = el('td', { class: 'file-cell', 'data-key': textKey });
-  td.append(el('div', { class: 'text-cell', title: htmlToText(val) || 'Click to open' },
-    el('div', { class: 'doc-chip' + (count ? ' has' : '') }, `${isReports ? '📊' : '📎'} ${count} ${label}`),
+  td.append(el('div', { class: 'text-cell', title: `${count} ${label}` + (val ? ' · ' + htmlToText(val) : '') },
+    el('div', { class: 'doc-chip' + (count ? ' has' : '') }, `${isReports ? '📊' : '📎'} ${count}`),
     richNode(val, 'clamp clamp-2')));
   td.addEventListener('click', () => toggleDropdown(td, () =>
     isReports ? openReportsDropdown(s, td) : openDocsDropdown(s, td)));
@@ -486,6 +488,32 @@ function plainToHtml(text) {
 const RT_COLORS = ['#1f2430', '#d64545', '#e8912d', '#c9a227', '#2e9d5b', '#14a3b8', '#3b6ef5', '#9b51e0'];
 const RT_HIGHLIGHTS = ['#fff59d', '#ffd8a8', '#ffc9c9', '#c3fae8', '#d0ebff', '#e5dbff'];
 
+function placeCaret(node, atEnd = false) {
+  const r = document.createRange();
+  if (node.firstChild && node.firstChild.nodeType === Node.TEXT_NODE) r.setStart(node.firstChild, atEnd ? node.firstChild.length : 0);
+  else r.setStart(node, 0);
+  r.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(r);
+}
+
+// Moves a nested list item one level out; the items that were below it in
+// the same sub-list become its own sub-items.
+function outdentItem(li) {
+  const sub = li.parentElement;          // UL/OL inside the parent item
+  const parentLi = sub.parentElement;    // LI one level up
+  const after = [];
+  for (let n = li.nextElementSibling; n; n = n.nextElementSibling) after.push(n);
+  if (after.length) {
+    const rest = document.createElement(sub.tagName);
+    rest.append(...after);
+    li.append(rest);
+  }
+  parentLi.after(li);
+  if (!sub.children.length) sub.remove();
+  placeCaret(li);
+}
+
 // Creates a formatted-text editor: toolbar + editable area.
 //   "- " at the start of a line -> bullet list, "1. " -> numbered list
 //   Enter adds a new list item (also after an empty one)
@@ -624,6 +652,31 @@ function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160,
       const r = document.createRange();
       r.setStart(li, 0); r.collapse(true);
       c.sel.removeAllRanges(); c.sel.addRange(r);
+      return;
+    }
+
+    const isEmptyItem = c.li.textContent === '' && !c.li.querySelector('ul, ol');
+    const nested = c.li.parentElement.parentElement && c.li.parentElement.parentElement.tagName === 'LI';
+
+    // → on an empty item: move it one level in (a bullet under the bullet above)
+    if (e.key === 'ArrowRight' && !e.shiftKey && isEmptyItem) {
+      const prev = c.li.previousElementSibling;
+      if (prev && prev.tagName === 'LI') {
+        e.preventDefault();
+        const type = c.li.parentElement.tagName;
+        let sub = [...prev.children].reverse().find(x => x.tagName === type);
+        if (!sub) { sub = document.createElement(type); prev.append(sub); }
+        sub.append(c.li);
+        placeCaret(c.li);
+      }
+      return;
+    }
+
+    // ← on an empty nested item, or Backspace at the start of a nested item:
+    // move it one level out
+    if (nested && ((e.key === 'ArrowLeft' && !e.shiftKey && isEmptyItem) || (e.key === 'Backspace' && c.beforeInLi === ''))) {
+      e.preventDefault();
+      outdentItem(c.li);
       return;
     }
 
