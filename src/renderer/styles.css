@@ -115,9 +115,7 @@ thead th {
 thead th:first-child { border-top-left-radius: var(--radius); }
 thead th:last-child { border-top-right-radius: var(--radius); }
 th.col-name { position: sticky; left: 0; z-index: 4; width: 140px; }
-th.col-level { width: 48px; }
-th.col-count { width: 68px; text-align: center; }
-th.col-reports { width: 82px; }
+th.th-counter { text-align: center; }
 
 td { padding: 0; }
 td.col-name {
@@ -258,9 +256,9 @@ tbody td { font-size: 13px; }
   background: var(--panel); color: var(--text); white-space: pre-wrap; word-break: break-word;
 }
 .rte ul, .rte ol { margin: 2px 0; padding-left: 24px; }
-/* nested lists: ● → ○ → ■, and 1. → a. → i. */
-.rte ul ul, .rich ul ul { list-style-type: circle; }
-.rte ul ul ul, .rich ul ul ul { list-style-type: square; }
+/* nested bullets all use the same black dot; nested numbers: 1. → a. → i. */
+.rte ul, .rich ul { list-style-type: disc; }
+.rte ul ul, .rich ul ul, .rte ul ul ul, .rich ul ul ul { list-style-type: disc; }
 .rte ol ol, .rich ol ol { list-style-type: lower-alpha; }
 .rte ol ol ol, .rich ol ol ol { list-style-type: lower-roman; }
 .rte li > ul, .rte li > ol, .rich li > ul, .rich li > ol { margin: 0; }
@@ -268,6 +266,24 @@ tbody td { font-size: 13px; }
 .rte-note .rte { max-height: 200px; }
 .rte-form { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .rte-form .rte { max-height: 180px; }
+
+/* Edit columns */
+.col-list { display: flex; flex-direction: column; gap: 4px; }
+.col-row {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) 120px 30px 30px 110px;
+  align-items: center; gap: 6px; padding: 4px 6px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+}
+.col-row.fixed, .col-row.removed { background: var(--panel-2); }
+.col-row.dragging { opacity: .4; }
+.col-row.drop-target { outline: 2px dashed var(--accent); }
+.col-row input[type="text"] { width: 100%; }
+.col-row .btn.small { justify-self: end; }
+.col-row.removed { grid-template-columns: 22px minmax(0, 1fr) 120px auto auto 0; }
+.col-handle { cursor: grab; color: var(--muted); text-align: center; user-select: none; }
+.col-type { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.col-fixed-name { font-weight: 600; padding-left: 8px; }
+.icon-btn:disabled { opacity: .3; cursor: default; background: transparent; }
 
 /* Backup settings */
 .dest-list, .cloud-list { display: flex; flex-direction: column; gap: 4px; }

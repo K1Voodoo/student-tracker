@@ -19,6 +19,7 @@
     <h1>Student Tracker</h1>
     <div class="topbar-right">
       <span id="studentCount" class="muted"></span>
+      <button id="editColumnsBtn" class="btn" title="Add, remove, move and rename columns">▦ Edit columns</button>
       <button id="settingsBtn" class="btn" title="Settings">⚙ Settings</button>
     </div>
   </header>
@@ -34,21 +35,8 @@
   <main class="table-wrap">
     <table id="grid">
       <thead>
-        <tr>
-          <th class="col-name">Name</th>
-          <th class="col-level">Level</th>
-          <th>Needs</th>
-          <th>Recurring mistakes</th>
-          <th>Vocabulary (learned)</th>
-          <th>Vocabulary (to be learned)</th>
-          <th>Grammar covered</th>
-          <th>Conversation</th>
-          <th>Homework</th>
-          <th class="col-count">Lesson count</th>
-          <th>Done</th>
-          <th>To do</th>
-          <th class="col-reports">Reports</th>
-        </tr>
+        <!-- filled from the column settings (Edit columns) -->
+        <tr id="headRow"><th class="col-name">Name</th></tr>
       </thead>
       <tbody id="gridBody"></tbody>
     </table>

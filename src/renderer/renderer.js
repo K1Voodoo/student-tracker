@@ -4,9 +4,9 @@
 // State
 // ======================================================================
 let data = { students: [], settings: {} };
-let reportsCache = {};          // name -> [{path, mtime}]
+let reportsCache = {};          // student id -> [{path, mtime}]
 let searchTerm = '';
-let editingCount = null;        // student id whose lesson counter is open
+let editingCount = null;        // "studentId|columnId" of the counter being edited
 let pendingCount = 0;
 
 const PERSONAL_FIELDS = [
@@ -25,22 +25,59 @@ const PERSONAL_FIELDS = [
   { key: 'notes', label: 'Notes', type: 'textarea' }
 ];
 
-// Text columns before the lesson counter
-const TEXT_COLUMNS = [
-  { key: 'level', label: 'Level', level: true },
-  { key: 'needs', label: 'Needs' },
-  { key: 'recurringMistakes', label: 'Recurring mistakes' },
-  { key: 'vocabLearned', label: 'Vocabulary (learned)' },
-  { key: 'vocabToLearn', label: 'Vocabulary (to be learned)' },
-  { key: 'grammarCovered', label: 'Grammar covered' },
-  { key: 'conversation', label: 'Conversation' },
-  { key: 'homework', label: 'Homework' }
+// ---------- Columns ----------
+// The columns are part of the data (data.settings.columns), so they are kept
+// in backups and are not reset by updates. Each column says where its values
+// live on the student: textKey (formatted text), filesKey (file list),
+// countKey (number).
+const COLUMN_TYPES = {
+  list:     { label: 'List',          desc: 'Formatted text with bullet and numbered lists' },
+  file:     { label: 'File',          desc: 'A list of documents (Browse to add)', width: 72 },
+  listfile: { label: 'List and file', desc: 'Documents plus formatted notes' },
+  counter:  { label: 'Counter',       desc: 'A number with − / + (like Lesson count)', width: 68 },
+  level:    { label: 'Level menu',    desc: 'A1–C2 menu', width: 48, builtin: true },
+  reports:  { label: 'Reports',       desc: 'Files from the student’s reports folder + notes', width: 82, builtin: true }
+};
+const NEW_COLUMN_TYPES = ['list', 'file', 'listfile', 'counter'];
+
+const DEFAULT_COLUMNS = [
+  { id: 'level', label: 'Level', type: 'level', textKey: 'level' },
+  { id: 'needs', label: 'Needs', type: 'list', textKey: 'needs' },
+  { id: 'recurringMistakes', label: 'Recurring mistakes', type: 'list', textKey: 'recurringMistakes' },
+  { id: 'vocabLearned', label: 'Vocabulary (learned)', type: 'list', textKey: 'vocabLearned' },
+  { id: 'vocabToLearn', label: 'Vocabulary (to be learned)', type: 'list', textKey: 'vocabToLearn' },
+  { id: 'grammarCovered', label: 'Grammar covered', type: 'list', textKey: 'grammarCovered' },
+  { id: 'conversation', label: 'Conversation', type: 'list', textKey: 'conversation' },
+  { id: 'homework', label: 'Homework', type: 'list', textKey: 'homework' },
+  { id: 'lessonCount', label: 'Lesson count', type: 'counter', countKey: 'lessonCount' },
+  { id: 'done', label: 'Done', type: 'listfile', textKey: 'docsText', filesKey: 'docsCompleted' },
+  { id: 'todo', label: 'To do', type: 'list', textKey: 'todo' },
+  { id: 'reports', label: 'Reports', type: 'reports', textKey: 'reportsText' }
 ];
 
-// Fields that hold formatted text (HTML from the rich text editor)
+function makeColumn(label, type) {
+  const id = 'c' + uid();
+  const col = { id, label, type };
+  if (type === 'list' || type === 'listfile') col.textKey = `f_${id}_text`;
+  if (type === 'file' || type === 'listfile') col.filesKey = `f_${id}_files`;
+  if (type === 'counter') col.countKey = `f_${id}_count`;
+  return col;
+}
+const visibleColumns = () => data.settings.columns.filter(c => !c.hidden);
+
+// First start of this version (or an old backup): use the standard columns.
+// Returns true if the settings were changed.
+function ensureColumns(settings) {
+  const ok = Array.isArray(settings.columns) &&
+    settings.columns.every(c => c && c.id && c.label && COLUMN_TYPES[c.type]);
+  if (ok) return false;
+  settings.columns = DEFAULT_COLUMNS.map(c => ({ ...c }));
+  return true;
+}
+
+// Fields that held plain text in old versions (converted once to formatted text)
 const RICH_KEYS = ['needs', 'recurringMistakes', 'vocabLearned', 'vocabToLearn', 'grammarCovered',
   'conversation', 'homework', 'todo', 'docsText', 'reportsText'];
-const TODO_COLUMN = { key: 'todo', label: 'To do' };
 
 const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
@@ -185,8 +222,25 @@ function matchesSearch(s) {
   return searchTerm.toLowerCase().split(/\s+/).filter(Boolean).every(t => hay.includes(t));
 }
 
+function renderHeader() {
+  const cols = visibleColumns();
+  const tr = $('#headRow');
+  tr.innerHTML = '';
+  tr.append(el('th', { class: 'col-name' }, 'Name'));
+  let fixed = 140, auto = 0;
+  for (const c of cols) {
+    const w = (COLUMN_TYPES[c.type] || {}).width;
+    const th = el('th', { 'data-col': c.id, class: 'th-' + c.type, title: c.label }, c.label);
+    if (w) { th.style.width = w + 'px'; fixed += w; } else auto++;
+    tr.append(th);
+  }
+  // below this width the table scrolls sideways instead of squeezing text columns
+  $('#grid').style.minWidth = (fixed + auto * 85) + 'px';
+}
+
 function render() {
   closePopover(false);
+  renderHeader();
   const body = $('#gridBody');
   body.innerHTML = '';
   const list = data.students
@@ -209,12 +263,19 @@ function render() {
 }
 
 function rowOf(s) { return document.querySelector(`tr[data-id="${s.id}"]`); }
+const cellOf = (s, colId) => rowOf(s) && rowOf(s).querySelector(`td[data-col="${colId}"]`);
+const colById = id => data.settings.columns.find(c => c.id === id);
 
 function rerenderRow(s) {
   const tr = rowOf(s);
   const fresh = renderRow(s);
   if (tr) tr.replaceWith(fresh);
   return fresh;
+}
+
+function rerenderCell(s, col) {
+  const c = cellOf(s, col.id);
+  if (c) c.replaceWith(renderCell(s, col));
 }
 
 function renderRow(s) {
@@ -227,7 +288,7 @@ function renderRow(s) {
     tr.style.setProperty('--row-fg', rc.fg);
   }
 
-  // Name
+  // Name (always first)
   const nameTd = el('td', { class: 'col-name' });
   nameTd.append(el('div', { class: 'name-cell', title: 'Show personal details' },
     el('span', { class: 'color-dot', style: { background: s.color || '#ccc' } }),
@@ -235,39 +296,35 @@ function renderRow(s) {
   nameTd.addEventListener('click', () => toggleDropdown(nameTd, () => openNameDropdown(s, nameTd)));
   tr.append(nameTd);
 
-  // Level, Needs, Mistakes, Vocab, Vocab, Grammar
-  for (const col of TEXT_COLUMNS) tr.append(renderTextCell(s, col));
-
-  // Lesson count
-  tr.append(renderCountCell(s));
-
-  // Documents (completed) – files + text
-  tr.append(renderFileCell(s, 'docs'));
-
-  // Documents (to do) – text dropdown
-  tr.append(renderTextCell(s, TODO_COLUMN));
-
-  // Reports – files from the reports folder + text
-  tr.append(renderFileCell(s, 'reports'));
-
+  for (const col of visibleColumns()) tr.append(renderCell(s, col));
   return tr;
 }
 
+function renderCell(s, col) {
+  switch (col.type) {
+    case 'counter': return renderCountCell(s, col);
+    case 'file': case 'listfile': case 'reports': return renderFileCell(s, col);
+    default: return renderTextCell(s, col); // list, level
+  }
+}
+
 function renderTextCell(s, col) {
-  const val = s[col.key] || '';
-  const td = el('td', { 'data-key': col.key });
+  const isLevel = col.type === 'level';
+  const val = s[col.textKey] || '';
+  const td = el('td', { 'data-col': col.id });
   const content = !val
     ? el('div', { class: 'clamp' }, el('span', { class: 'muted' }, '—'))
-    : col.level ? el('div', { class: 'clamp' }, val) : richNode(val, 'clamp');
-  td.append(el('div', { class: 'text-cell', title: (col.level ? val : htmlToText(val)) || 'Click to edit' }, content));
+    : isLevel ? el('div', { class: 'clamp' }, val) : richNode(val, 'clamp');
+  td.append(el('div', { class: 'text-cell', title: (isLevel ? val : htmlToText(val)) || 'Click to edit' }, content));
   td.addEventListener('click', () => toggleDropdown(td, () =>
-    col.level ? openLevelDropdown(s, col, td) : openTextDropdown(s, col, td)));
+    isLevel ? openLevelDropdown(s, col, td) : openTextDropdown(s, col, td)));
   return td;
 }
 
-function renderCountCell(s) {
-  const td = el('td', { class: 'count-cell' });
-  if (editingCount === s.id) {
+function renderCountCell(s, col) {
+  const td = el('td', { class: 'count-cell', 'data-col': col.id });
+  const key = `${s.id}|${col.id}`;
+  if (editingCount === key) {
     const valueEl = el('span', { class: 'count-value' }, pendingCount);
     const set = v => { pendingCount = Math.max(0, v); valueEl.textContent = pendingCount; };
     td.append(el('div', { class: 'count-edit' },
@@ -279,18 +336,15 @@ function renderCountCell(s) {
       el('div', { class: 'count-row' },
         el('button', {
           class: 'btn primary small', onclick: async () => {
-            s.lessonCount = pendingCount;
+            s[col.countKey] = pendingCount;
             editingCount = null;
             await persist();
-            td.replaceWith(renderCountCell(s));
-            toast(`Lesson count saved for ${s.name}`);
+            rerenderCell(s, col);
+            toast(`${col.label} saved for ${s.name}`);
           }
         }, 'Save'),
         el('button', {
-          class: 'icon-btn', title: 'Cancel', onclick: () => {
-            editingCount = null;
-            td.replaceWith(renderCountCell(s));
-          }
+          class: 'icon-btn', title: 'Cancel', onclick: () => { editingCount = null; rerenderCell(s, col); }
         }, '✕')
       )
     ));
@@ -299,34 +353,34 @@ function renderCountCell(s) {
       class: 'count-number', title: 'Click to change',
       onclick: () => {
         closePopover(true);
-        if (editingCount && editingCount !== s.id) {
-          const other = getStudent(editingCount);
+        if (editingCount && editingCount !== key) { // close the other open counter
+          const [sid, cid] = editingCount.split('|');
           editingCount = null;
-          if (other) rerenderRow(other);
+          const os = getStudent(sid), oc = colById(cid);
+          if (os && oc) rerenderCell(os, oc);
         }
-        editingCount = s.id;
-        pendingCount = s.lessonCount || 0;
-        td.replaceWith(renderCountCell(s));
+        editingCount = key;
+        pendingCount = s[col.countKey] || 0;
+        rerenderCell(s, col);
       }
-    }, s.lessonCount || 0));
+    }, s[col.countKey] || 0));
   }
   return td;
 }
 
-// Cell for "Documents (completed)" and "Reports": a file-count chip and the
-// first lines of the free text; click opens files + text editor below.
-function renderFileCell(s, kind) {
-  const isReports = kind === 'reports';
-  const count = isReports ? (reportsCache[s.id] || []).length : (s.docsCompleted || []).length;
-  const textKey = isReports ? 'reportsText' : 'docsText';
-  const val = s[textKey] || '';
+// Cell for file columns and Reports: a file-count chip and (if the column
+// has notes) the first lines of the text; click opens files + notes below.
+function renderFileCell(s, col) {
+  const isReports = col.type === 'reports';
+  const count = isReports ? (reportsCache[s.id] || []).length : (s[col.filesKey] || []).length;
+  const val = col.textKey ? (s[col.textKey] || '') : '';
   const label = isReports ? (count === 1 ? 'report' : 'reports') : (count === 1 ? 'file' : 'files');
-  const td = el('td', { class: 'file-cell', 'data-key': textKey });
+  const td = el('td', { class: 'file-cell', 'data-col': col.id });
   td.append(el('div', { class: 'text-cell', title: `${count} ${label}` + (val ? ' · ' + htmlToText(val) : '') },
     el('div', { class: 'doc-chip' + (count ? ' has' : '') }, `${isReports ? '📊' : '📎'} ${count}`),
-    richNode(val, 'clamp clamp-2')));
+    val ? richNode(val, 'clamp clamp-2') : null));
   td.addEventListener('click', () => toggleDropdown(td, () =>
-    isReports ? openReportsDropdown(s, td) : openDocsDropdown(s, td)));
+    isReports ? openReportsDropdown(s, col, td) : openDocsDropdown(s, col, td)));
   return td;
 }
 
@@ -488,6 +542,21 @@ function plainToHtml(text) {
 const RT_COLORS = ['#1f2430', '#d64545', '#e8912d', '#c9a227', '#2e9d5b', '#14a3b8', '#3b6ef5', '#9b51e0'];
 const RT_HIGHLIGHTS = ['#fff59d', '#ffd8a8', '#ffc9c9', '#c3fae8', '#d0ebff', '#e5dbff'];
 
+// True when nothing visible comes before `node` on its line: the line starts
+// at the editor's start, after a line break, or after a block (div, list…).
+const RT_BLOCKS = /^(DIV|P|UL|OL|LI|BR)$/;
+function isLineStart(node, root) {
+  let n = node;
+  while (n && n !== root) {
+    let prev = n.previousSibling;
+    while (prev && prev.nodeType === Node.TEXT_NODE && prev.data === '') prev = prev.previousSibling;
+    if (prev) return RT_BLOCKS.test(prev.nodeName) || /\n$/.test(prev.textContent);
+    n = n.parentNode;                       // first in its parent: look at the parent
+    if (n && n !== root && /^(DIV|P|LI)$/.test(n.nodeName)) return true;
+  }
+  return true;
+}
+
 function placeCaret(node, atEnd = false) {
   const r = document.createRange();
   if (node.firstChild && node.firstChild.nodeType === Node.TEXT_NODE) r.setStart(node.firstChild, atEnd ? node.firstChild.length : 0);
@@ -603,15 +672,10 @@ function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160,
     if (!/^insert(Text|ReplacementText|CompositionText)$/.test(e.inputType)) return;
     const c = caretInfo();
     if (!c || c.li) return;
-    // first text node of the line the caret is on
-    let first = c.block === ed ? c.range.startContainer : c.block;
-    if (first.nodeType !== Node.TEXT_NODE) {
-      const w = document.createTreeWalker(first, NodeFilter.SHOW_TEXT);
-      first = w.nextNode();
-    }
-    if (!first || first.nodeType !== Node.TEXT_NODE) return;
-    // the marker must be at the very start of the line
-    if (c.block === ed && first.previousSibling && first.previousSibling.nodeName !== 'BR') return;
+    // the text the caret is in must start the line it is on (whatever is
+    // written above: plain text, a list, bold text…)
+    const first = c.range.startContainer;
+    if (first.nodeType !== Node.TEXT_NODE || !isLineStart(first, ed)) return;
     const m = first.data.replace(/ /g, ' ').match(/^(?:([-•])|(\d+)\.) /);
     if (!m) return;
     const bullet = !!m[1];
@@ -629,10 +693,18 @@ function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160,
     const s2 = window.getSelection();
     s2.modify('move', 'forward', 'lineboundary');
     for (let i = 0; i < restAfter; i++) s2.modify('move', 'backward', 'character');
-    if (num && num[1] !== '1') {
-      const c2 = caretInfo();
-      const ol = c2 && c2.li && c2.li.closest('ol');
-      if (ol) ol.setAttribute('start', num[1]);
+    const c2 = caretInfo();
+    const newList = c2 && c2.li && c2.li.parentElement;
+    if (newList) {
+      // a list created inside bold/colored text must not inherit that formatting:
+      // move it out of the surrounding inline element(s)
+      let moved = false;
+      while (newList.parentElement && newList.parentElement !== ed && /^(SPAN|B|STRONG|I|EM|U|S|STRIKE|FONT)$/.test(newList.parentElement.nodeName)) {
+        newList.parentElement.after(newList);
+        moved = true;
+      }
+      if (num && num[1] !== '1' && newList.tagName === 'OL') newList.setAttribute('start', num[1]);
+      if (moved) placeCaret(c2.li, true);
     }
     updateState();
   });
@@ -721,7 +793,7 @@ function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160,
 }
 
 function openTextDropdown(s, col, td) {
-  const original = s[col.key] || '';
+  const original = s[col.textKey] || '';
   const rte = createRichEditor(original, { onSubmit: () => closePopover(true) });
 
   showDropdown(td, [
@@ -736,10 +808,9 @@ function openTextDropdown(s, col, td) {
     onClose: async save => {
       const v = rte.getHtml();
       if (!save || v === original) return;
-      s[col.key] = v;
+      s[col.textKey] = v;
       await persist();
-      const cell = rowOf(s) && rowOf(s).querySelector(`td[data-key="${col.key}"]`);
-      if (cell) cell.replaceWith(renderTextCell(s, col));
+      rerenderCell(s, col);
     }
   });
   rte.focus();
@@ -747,19 +818,19 @@ function openTextDropdown(s, col, td) {
 
 // ---------- Level menu ----------
 function openLevelDropdown(s, col, td) {
+  const cur = s[col.textKey] || '';
   const setLevel = async v => {
-    s.level = v;
+    s[col.textKey] = v;
     closePopover(false);
     await persist();
-    const cell = rowOf(s) && rowOf(s).querySelector(`td[data-key="level"]`);
-    if (cell) cell.replaceWith(renderTextCell(s, col));
+    rerenderCell(s, col);
   };
-  const custom = el('input', { type: 'text', placeholder: 'Other (e.g. B1+)…', value: LEVELS.includes(s.level) ? '' : (s.level || ''), style: { width: '100%' } });
+  const custom = el('input', { type: 'text', placeholder: 'Other (e.g. B1+)…', value: LEVELS.includes(cur) ? '' : cur, style: { width: '100%' } });
   custom.addEventListener('keydown', e => { if (e.key === 'Enter') setLevel(custom.value.trim()); });
 
   showDropdown(td, [
     el('div', { class: 'pop-body', style: { padding: '6px' } },
-      LEVELS.map(l => el('button', { class: 'menu-item' + (s.level === l ? ' selected' : ''), onclick: () => setLevel(l) }, l)),
+      LEVELS.map(l => el('button', { class: 'menu-item' + (cur === l ? ' selected' : ''), onclick: () => setLevel(l) }, l)),
       el('div', { class: 'menu-sep' }),
       el('div', { style: { padding: '4px 6px' } }, custom),
       el('div', { class: 'menu-sep' }),
@@ -771,8 +842,11 @@ function openLevelDropdown(s, col, td) {
 function openNameDropdown(s, td) {
   const p = s.personal || {};
   const grid = el('div', { class: 'info-grid' });
-  grid.append(el('div', { class: 'label' }, 'Lessons'), el('div', { class: 'value' }, s.lessonCount || 0));
-  grid.append(el('div', { class: 'label' }, 'Level'), el('div', { class: 'value' }, s.level || '—'));
+  // counters and level menus from the current columns
+  for (const c of visibleColumns()) {
+    if (c.type === 'counter') grid.append(el('div', { class: 'label' }, c.label), el('div', { class: 'value' }, s[c.countKey] || 0));
+    if (c.type === 'level') grid.append(el('div', { class: 'label' }, c.label), el('div', { class: 'value' }, s[c.textKey] || '—'));
+  }
   grid.append(el('div', { class: 'label' }, 'Reports folder'), el('div', { class: 'value' },
     s.reportsFolder
       ? el('a', { onclick: () => window.api.openFile(s.reportsFolder), title: 'Open folder' }, s.reportsFolder)
@@ -929,13 +1003,11 @@ function noteEditor(s, key) {
   return { ta: rte.node, commit };
 }
 
-const cellOf = (s, key) => rowOf(s) && rowOf(s).querySelector(`td[data-key="${key}"]`);
-
-// ---------- Documents (completed): file list with Browse + text ----------
-async function openDocsDropdown(s, td) {
-  const list = s.docsCompleted || (s.docsCompleted = []);
+// ---------- File columns ("File" and "List and file"): files + Browse (+ notes) ----------
+async function openDocsDropdown(s, col, td) {
+  const list = s[col.filesKey] || (s[col.filesKey] = []);
   const exists = list.length ? await window.api.filesExist(list.map(d => d.path)) : [];
-  const note = noteEditor(s, 'docsText');
+  const note = col.textKey ? noteEditor(s, col.textKey) : { ta: null, commit: () => false };
 
   const ul = el('ul', { class: 'pop-list' });
   list.forEach((doc, i) => {
@@ -943,53 +1015,53 @@ async function openDocsDropdown(s, td) {
       el('span', { class: 'file-link', onclick: () => openFile(doc.path) }, baseName(doc.path)),
       el('span', { class: 'file-date' }, fmtDate(doc.added)),
       el('button', { class: 'icon-btn', title: 'Show in folder', onclick: () => window.api.revealFile(doc.path) }, '📁'),
-      el('button', { class: 'icon-btn', title: 'Remove from list (file is not deleted)', onclick: () => { note.commit(); removeDoc(s, i); } }, '✕')
+      el('button', { class: 'icon-btn', title: 'Remove from list (file is not deleted)', onclick: () => { note.commit(); removeDoc(s, col, i); } }, '✕')
     ));
   });
 
   showDropdown(td, [
-    popHead(`Done · ${s.name}`),
+    popHead(`${col.label} · ${s.name}`),
     list.length ? ul : el('div', { class: 'pop-empty' }, 'No documents yet.'),
-    el('div', { class: 'pop-label' }, 'Notes'),
+    note.ta ? el('div', { class: 'pop-label' }, 'Notes') : null,
     note.ta,
     el('div', { class: 'pop-foot' },
-      el('button', { class: 'btn small', style: { marginRight: 'auto' }, onclick: () => { note.commit(); browseDocs(s); } }, '📂 Browse…'),
-      el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
-      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
+      el('button', { class: 'btn small', style: { marginRight: 'auto' }, onclick: () => { note.commit(); browseDocs(s, col); } }, '📂 Browse…'),
+      note.ta ? el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel') : null,
+      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, note.ta ? 'Save' : 'Close'))
   ], {
     width: 400,
     onClose: async save => {
       if (!save || !note.commit()) return;
       await persist();
-      const c = cellOf(s, 'docsText');
-      if (c) c.replaceWith(renderFileCell(s, 'docs'));
+      rerenderCell(s, col);
     }
   });
 }
 
-async function reopenDocs(s) {
+async function reopenDocs(s, col) {
   await persist();
   closePopover(false);
-  rerenderRow(s);
-  await openDocsDropdown(s, cellOf(s, 'docsText'));
+  rerenderCell(s, col);
+  await openDocsDropdown(s, col, cellOf(s, col.id));
 }
 
-async function browseDocs(s) {
+async function browseDocs(s, col) {
   const paths = await window.api.pickFiles();
+  const list = s[col.filesKey] || (s[col.filesKey] = []);
   let added = 0;
   for (const p of paths) {
-    if (!s.docsCompleted.some(d => d.path.toLowerCase() === p.toLowerCase())) {
-      s.docsCompleted.push({ path: p, added: Date.now() });
+    if (!list.some(d => d.path.toLowerCase() === p.toLowerCase())) {
+      list.push({ path: p, added: Date.now() });
       added++;
     }
   }
   if (paths.length) toast(added ? `Added ${added} document${added > 1 ? 's' : ''}` : 'Already in the list');
-  await reopenDocs(s);
+  await reopenDocs(s, col);
 }
 
-async function removeDoc(s, i) {
-  s.docsCompleted.splice(i, 1);
-  await reopenDocs(s);
+async function removeDoc(s, col, i) {
+  s[col.filesKey].splice(i, 1);
+  await reopenDocs(s, col);
 }
 
 async function openFile(p) {
@@ -1024,11 +1096,11 @@ async function scanAllReports() {
   await Promise.all(data.students.map(scanStudentReports));
 }
 
-async function openReportsDropdown(s, td) {
+async function openReportsDropdown(s, col, td) {
   const src = reportsSource(s);
   const reportsFolder = src && src.folder;
   const reportsPattern = data.settings.reportsPattern;
-  const note = noteEditor(s, 'reportsText');
+  const note = noteEditor(s, col.textKey);
   const reps = await scanStudentReports(s);
 
   const files = !reportsFolder
@@ -1043,7 +1115,7 @@ async function openReportsDropdown(s, td) {
       : el('div', { class: 'pop-empty' }, 'No files in this folder yet.');
 
   showDropdown(td, [
-    popHead(`Reports · ${s.name}`),
+    popHead(`${col.label} · ${s.name}`),
     reportsFolder ? el('div', { class: 'pop-sub' },
       src.own ? `Folder: ${reportsFolder}` : `Shared folder: ${reportsFolder} · Pattern: ${reportsPattern || '*{name}*'}`,
       ' · ',
@@ -1057,8 +1129,8 @@ async function openReportsDropdown(s, td) {
           note.commit();
           await persist();
           closePopover(false);
-          rerenderRow(s);
-          await openReportsDropdown(s, cellOf(s, 'reportsText'));
+          rerenderCell(s, col);
+          await openReportsDropdown(s, col, cellOf(s, col.id));
         }
       }, '⟳ Refresh') : null,
       el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
@@ -1068,8 +1140,7 @@ async function openReportsDropdown(s, td) {
     onClose: async save => {
       const changed = save && note.commit();
       if (changed) await persist();
-      const c = cellOf(s, 'reportsText');
-      if (c) c.replaceWith(renderFileCell(s, 'reports')); // also refreshes the report count
+      rerenderCell(s, col); // also refreshes the report count
     }
   });
 }
@@ -1114,6 +1185,155 @@ function openAddStudent() {
     form.foot
   );
   form.focus();
+}
+
+// ======================================================================
+// Edit columns: add, remove (hide), move and rename columns
+// ======================================================================
+function openColumnsEditor() {
+  const body = el('div', { class: 'modal-body' });
+  openModal(
+    el('div', { class: 'modal-head' }, el('h2', {}, '▦ Edit columns'), el('button', { class: 'icon-btn', onclick: closeModal }, '✕')),
+    body,
+    el('div', { class: 'modal-foot' },
+      el('span', { class: 'muted', style: { fontSize: '12px', alignSelf: 'center' } }, 'Changes are saved right away and are included in backups.'),
+      el('div', { class: 'right' }, el('button', { class: 'btn primary', onclick: closeModal }, 'Done')))
+  );
+  $('#modal').classList.add('modal-wide');
+  drawColumnsEditor(body);
+}
+
+async function applyColumns(body) {
+  await persist();
+  render();
+  drawColumnsEditor(body);
+}
+
+function drawColumnsEditor(body) {
+  const all = data.settings.columns;
+  const visible = all.filter(c => !c.hidden);
+  const hidden = all.filter(c => c.hidden);
+
+  const setOrder = ids => {
+    const byId = Object.fromEntries(all.map(c => [c.id, c]));
+    data.settings.columns = [...ids.map(id => byId[id]), ...hidden];
+  };
+  const move = (i, d) => {
+    const ids = visible.map(c => c.id);
+    const j = i + d;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setOrder(ids);
+    applyColumns(body);
+  };
+
+  // --- current columns ---
+  let dragId = null;
+  const list = el('div', { class: 'col-list' },
+    el('div', { class: 'col-row fixed' },
+      el('span', { class: 'col-handle' }, ''),
+      el('span', { class: 'col-fixed-name' }, 'Name'),
+      el('span', { class: 'col-type' }, 'always first'),
+      el('span'), el('span'), el('span')),
+    visible.map((c, i) => {
+      const name = el('input', { type: 'text', value: c.label, title: 'Click to rename' });
+      const rename = async () => {
+        const v = name.value.trim();
+        if (!v) { name.value = c.label; toast('A column needs a name'); return; }
+        if (v === c.label) return;
+        c.label = v;
+        await applyColumns(body);
+        toast('Column renamed');
+      };
+      name.addEventListener('change', rename);
+      name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); });
+
+      const row = el('div', { class: 'col-row', draggable: 'true', 'data-id': c.id },
+        el('span', { class: 'col-handle', title: 'Drag to move' }, '⠿'),
+        name,
+        el('span', { class: 'col-type', title: (COLUMN_TYPES[c.type] || {}).desc }, (COLUMN_TYPES[c.type] || {}).label),
+        el('button', { class: 'icon-btn', title: 'Move left', disabled: i === 0 ? true : null, onclick: () => move(i, -1) }, '↑'),
+        el('button', { class: 'icon-btn', title: 'Move right', disabled: i === visible.length - 1 ? true : null, onclick: () => move(i, 1) }, '↓'),
+        el('button', {
+          class: 'btn small danger', title: 'Hide this column (its data is kept and it can be restored)',
+          onclick: async () => { c.hidden = true; await applyColumns(body); toast(`“${c.label}” removed — restore it below if needed`); }
+        }, 'Remove'));
+
+      // drag & drop to reorder
+      row.addEventListener('dragstart', e => { dragId = c.id; row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+      row.addEventListener('dragend', () => { row.classList.remove('dragging'); list.querySelectorAll('.drop-target').forEach(x => x.classList.remove('drop-target')); });
+      row.addEventListener('dragover', e => { if (dragId && dragId !== c.id) { e.preventDefault(); row.classList.add('drop-target'); } });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        if (!dragId || dragId === c.id) return;
+        const ids = visible.map(x => x.id).filter(id => id !== dragId);
+        ids.splice(ids.indexOf(c.id) + (visible.findIndex(x => x.id === dragId) < i ? 1 : 0), 0, dragId);
+        setOrder(ids);
+        dragId = null;
+        applyColumns(body);
+      });
+      return row;
+    }));
+
+  // --- add a new column ---
+  const newName = el('input', { type: 'text', placeholder: 'Column name, e.g. Pronunciation' });
+  const newType = el('select', {}, NEW_COLUMN_TYPES.map(t => el('option', { value: t }, COLUMN_TYPES[t].label)));
+  const typeDesc = el('div', { class: 'hint', style: { gridColumn: 'auto', marginTop: '4px' } });
+  const showDesc = () => { typeDesc.textContent = COLUMN_TYPES[newType.value].desc; };
+  newType.addEventListener('change', showDesc);
+  showDesc();
+  const add = async () => {
+    const label = newName.value.trim();
+    if (!label) { newName.focus(); toast('Type a name for the new column'); return; }
+    data.settings.columns.push(makeColumn(label, newType.value));
+    await applyColumns(body);
+    toast(`Column “${label}” added`);
+  };
+  newName.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+
+  // --- removed columns ---
+  const removed = hidden.length
+    ? el('div', { class: 'col-list' }, hidden.map(c => el('div', { class: 'col-row removed' },
+        el('span', { class: 'col-handle' }, ''),
+        el('span', { class: 'col-fixed-name' }, c.label),
+        el('span', { class: 'col-type' }, (COLUMN_TYPES[c.type] || {}).label),
+        el('button', {
+          class: 'btn small', onclick: async () => {
+            delete c.hidden;
+            // put it back at the end of the visible columns
+            data.settings.columns = [...data.settings.columns.filter(x => !x.hidden && x !== c), c, ...data.settings.columns.filter(x => x.hidden)];
+            await applyColumns(body);
+            toast(`“${c.label}” restored`);
+          }
+        }, 'Restore'),
+        el('button', {
+          class: 'btn small danger', title: 'Delete the column and everything written in it, for all students',
+          onclick: async () => {
+            if (!confirm(`Delete the column “${c.label}” for good?\n\nEverything written in it (for all students) will be deleted. This cannot be undone.`)) return;
+            for (const s of data.students) for (const k of [c.textKey, c.filesKey, c.countKey]) if (k) delete s[k];
+            data.settings.columns = data.settings.columns.filter(x => x !== c);
+            await applyColumns(body);
+            toast(`“${c.label}” deleted`);
+          }
+        }, 'Delete forever'),
+        el('span'))))
+    : el('div', { class: 'muted' }, 'None');
+
+  body.innerHTML = '';
+  body.append(
+    el('div', { class: 'section-title' }, 'Columns (left to right)'),
+    el('div', { class: 'hint', style: { marginTop: '-4px', marginBottom: '8px' } },
+      'Click a name to rename it. Drag ⠿ or use ↑ ↓ to move. “Remove” hides a column — what was written in it is kept and you can restore it.'),
+    list,
+    el('div', { class: 'section-title' }, 'Add a column'),
+    el('div', { class: 'form-grid' },
+      el('label', {}, 'Name'), newName,
+      el('label', {}, 'Type'), el('div', {}, newType, typeDesc),
+      el('span'), el('div', {}, el('button', { class: 'btn primary small', onclick: add }, '+ Add column'))),
+    el('div', { class: 'section-title' }, 'Removed columns'),
+    removed
+  );
 }
 
 // ======================================================================
@@ -1214,6 +1434,7 @@ async function openSettings() {
                 if (!Array.isArray(imp.students)) throw new Error('Not a Student Tracker backup');
                 if (!confirm(`Replace current data with the backup (${imp.students.length} students)?`)) return;
                 data = { students: imp.students, settings: { ...DEFAULT_SETTINGS, ...(imp.settings || {}) } };
+                ensureColumns(data.settings);
                 data.students.forEach(migrate);
                 await persist(); applyTheme(); await scanAllReports(); render(); closeModal();
                 toast('Backup imported');
@@ -1436,6 +1657,7 @@ $('#updateLater').addEventListener('click',() => { updateDismissed = true; $('#u
 $('#search').addEventListener('input', e => { searchTerm = e.target.value.trim(); render(); });
 $('#addStudentBtn').addEventListener('click', openAddStudent);
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#editColumnsBtn').addEventListener('click', openColumnsEditor);
 
 // Re-scan reports whenever the window gets focus (picks up newly saved report files)
 let focusScan = 0;
@@ -1453,6 +1675,7 @@ window.addEventListener('focus', async () => {
 (async function init() {
   data = await window.api.loadData();
   data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+  if (ensureColumns(data.settings)) migrated = true;
   // (earlier test builds used the folder name "Student Tracker Backups")
   data.settings.backupDestinations = (data.settings.backupDestinations || [])
     .map(d => d.replace(/([\\/])Student Tracker Backups$/i, '$1' + BACKUP_SUBFOLDER));
