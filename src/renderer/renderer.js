@@ -126,6 +126,17 @@ function toast(msg) {
 }
 
 async function persist() {
+  // A detached window saves only its own field, so it never overwrites what
+  // was changed in the main window (synchronous, so it also works on close).
+  if (DETACHED) {
+    const s = getStudent(DETACHED_SID), col = colById(DETACHED_COL);
+    if (!s || !col) return;
+    const changes = {};
+    for (const k of [col.textKey, col.filesKey, col.countKey]) if (k) changes[k] = s[k] === undefined ? null : s[k];
+    try { window.api.patchStudentSync(s.id, changes); }
+    catch (e) { toast('Could not save: ' + e.message); }
+    return;
+  }
   try { await window.api.saveData(data); }
   catch (e) { toast('Could not save: ' + e.message); }
 }
@@ -263,7 +274,7 @@ function render() {
 }
 
 function rowOf(s) { return document.querySelector(`tr[data-id="${s.id}"]`); }
-const cellOf = (s, colId) => rowOf(s) && rowOf(s).querySelector(`td[data-col="${colId}"]`);
+const cellOf = (s, colId) => DETACHED ? detachedAnchor : rowOf(s) && rowOf(s).querySelector(`td[data-col="${colId}"]`);
 const colById = id => data.settings.columns.find(c => c.id === id);
 
 function rerenderRow(s) {
@@ -274,6 +285,7 @@ function rerenderRow(s) {
 }
 
 function rerenderCell(s, col) {
+  if (DETACHED) return;
   const c = cellOf(s, col.id);
   if (c) c.replaceWith(renderCell(s, col));
 }
@@ -308,9 +320,12 @@ function renderCell(s, col) {
   }
 }
 
+const plainLevel = v => (v && /<[a-z]/i.test(v)) ? htmlToText(v).replace(/\s+/g, ' ').trim() : (v || '');
+
 function renderTextCell(s, col) {
   const isLevel = col.type === 'level';
-  const val = s[col.textKey] || '';
+  // a Level column shows plain text (also if it held formatted text before a type change)
+  const val = isLevel ? plainLevel(s[col.textKey]) : (s[col.textKey] || '');
   const td = el('td', { 'data-col': col.id });
   const content = !val
     ? el('div', { class: 'clamp' }, el('span', { class: 'muted' }, '—'))
@@ -385,10 +400,19 @@ function renderFileCell(s, col) {
 }
 
 // ======================================================================
-// Dropdown (one at a time, always opens DOWN below its cell, floats over the
-// table like a context menu – the cell / row never changes size)
+// Dropdown (one at a time, opens below its cell – or above when there is no
+// room – and floats over the table like a context menu; the cell never
+// changes size). Field menus can be maximized over the whole app (⤢) or
+// detached into their own window (⧉).
 // ======================================================================
-let pop = { anchor: null, onClose: null };
+const QS = new URLSearchParams(location.search);
+const DETACHED = QS.get('detached') === '1';   // this window shows one field (opened with ⧉)
+const DETACHED_SID = QS.get('sid');
+const DETACHED_COL = QS.get('col');
+const detachedAnchor = document.createElement('div');
+
+let pop = { anchor: null, onClose: null, key: null, width: 380, detach: null };
+let maxKey = null;          // "studentId|columnId" of the maximized menu (kept while it is reopened)
 
 function toggleDropdown(anchor, open) {
   if (pop.anchor === anchor) { closePopover(true); return; }
@@ -397,26 +421,39 @@ function toggleDropdown(anchor, open) {
 }
 
 function closePopover(save = true) {
+  if (DETACHED) {
+    // a detached window keeps its view open; "closing" only saves
+    if (save && pop.onClose) return pop.onClose(true);
+    return;
+  }
   const p = $('#popover');
   const { anchor, onClose } = pop;
-  pop = { anchor: null, onClose: null };
+  pop = { anchor: null, onClose: null, key: null, width: 380, detach: null };
   p.classList.add('hidden');
+  p.classList.remove('pop-max');
   p.innerHTML = '';
   if (anchor) anchor.classList.remove('active-cell');
   if (onClose) onClose(save);
 }
 
-function showDropdown(anchor, nodes, { width = 380, onClose = null } = {}) {
+// opts.detach = { sid, colId } adds the maximize / detach buttons to the header
+function showDropdown(anchor, nodes, { width = 380, onClose = null, detach = null } = {}) {
   const p = $('#popover');
   p.innerHTML = '';
   p.append(...nodes);
-  pop = { anchor, onClose };
+  const key = detach ? `${detach.sid}|${detach.colId}` : null;
+  pop = { anchor, onClose, key, width, detach };
+  if (DETACHED) { p.classList.remove('hidden'); return; }
   anchor.classList.add('active-cell');
+  if (key && key === maxKey) { p.classList.add('pop-max'); p.classList.remove('hidden'); syncMaxButton(); return; }
+  maxKey = null;
+  p.classList.remove('pop-max');
   placeDropdown(anchor, width);
 }
 
 function placeDropdown(anchor, width) {
   const p = $('#popover');
+  if (DETACHED || p.classList.contains('pop-max')) return;
   const r = anchor.getBoundingClientRect();
   const w = Math.min(Math.max(width, r.width), window.innerWidth - 20);
   p.style.width = w + 'px';
@@ -441,18 +478,97 @@ function placeDropdown(anchor, width) {
   }
 }
 
-function popHead(title) {
+// ⤢ Maximize: the menu covers the whole app window (click again to restore)
+function toggleMaximize() {
+  const p = $('#popover');
+  const on = !p.classList.contains('pop-max');
+  maxKey = on ? pop.key : null;
+  if (on) {
+    p.classList.add('pop-max');
+    p.style.top = p.style.left = p.style.bottom = p.style.width = p.style.maxHeight = '';
+  } else {
+    p.classList.remove('pop-max');
+    placeDropdown(pop.anchor, pop.width);
+  }
+  syncMaxButton();
+}
+function syncMaxButton() {
+  const b = $('#popover .pop-max-btn');
+  if (!b) return;
+  const on = $('#popover').classList.contains('pop-max');
+  b.textContent = on ? '🗗' : '⤢';
+  b.title = on ? 'Restore size' : 'Maximize (fill the app window)';
+}
+
+// ⧉ Detach: save, then open this field in its own window next to the app
+async function detachCurrent() {
+  const d = pop.detach;
+  if (!d) return;
+  maxKey = null;
+  await closePopover(true);
+  window.api.detachField({ sid: d.sid, colId: d.colId });
+}
+
+function popHead(title, tools = false) {
+  if (DETACHED) {
+    // the detached window has no Windows title bar: this header is its title bar
+    // (drag it to move the window): Reattach · Maximize · Close
+    return el('div', { class: 'pop-head detached-bar' }, el('strong', {}, title),
+      el('span', { class: 'muted detached-status', id: 'detachedStatus' }, 'Saved automatically'),
+      el('span', { class: 'pop-tools' },
+        el('button', { class: 'icon-btn', title: 'Reattach (back into the main window)', onclick: reattachWindow }, '⇱'),
+        el('button', { class: 'icon-btn win-max-btn', title: 'Maximize window', onclick: () => window.api.toggleMaximizeWindow() }, '□'),
+        el('button', { class: 'icon-btn win-close-btn', title: 'Close window', onclick: () => { flushDetached(); window.close(); } }, '✕')));
+  }
   return el('div', { class: 'pop-head' }, el('strong', {}, title),
-    el('button', { class: 'icon-btn', title: 'Close', onclick: () => closePopover(true) }, '✕'));
+    el('span', { class: 'pop-tools' },
+      // same order as in a detached window: Detach/Reattach · Maximize · Close
+      tools ? el('button', { class: 'icon-btn', title: 'Detach (open in its own window)', onclick: detachCurrent }, '⧉') : null,
+      tools ? el('button', { class: 'icon-btn pop-max-btn', title: 'Maximize (fill the app window)', onclick: toggleMaximize }, '⤢') : null,
+      el('button', { class: 'icon-btn', title: 'Close', onclick: () => { maxKey = null; closePopover(true); } }, '✕')));
+}
+
+// Save anything still waiting in a detached window (synchronous)
+function flushDetached() {
+  if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
+  closePopover(true);
+}
+
+// ⇱ Reattach: save, close this window and open the same field in the main window
+function reattachWindow() {
+  flushDetached();
+  window.api.reattachField({ sid: DETACHED_SID, colId: DETACHED_COL });
+}
+
+// In a detached window, typing saves automatically shortly after you stop.
+let autosaveTimer = null;
+function autosaveOnInput(editorEl) {
+  if (!DETACHED) return;
+  editorEl.addEventListener('input', () => {
+    const st = document.getElementById('detachedStatus');
+    if (st) st.textContent = 'Saving…';
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(async () => {
+      autosaveTimer = null;
+      await closePopover(true);
+      const s2 = document.getElementById('detachedStatus');
+      if (s2) s2.textContent = 'Saved ✓';
+    }, 500);
+  });
 }
 
 document.addEventListener('mousedown', e => {
+  if (DETACHED) return;
   const p = $('#popover');
   if (p.classList.contains('hidden')) return;
   if (p.contains(e.target) || (pop.anchor && pop.anchor.contains(e.target))) return;
+  maxKey = null;
   closePopover(true);
 });
-window.addEventListener('resize', () => closePopover(true));
+window.addEventListener('resize', () => {
+  if (DETACHED || $('#popover').classList.contains('pop-max')) return;
+  closePopover(true);
+});
 $('.table-wrap').addEventListener('scroll', () => {
   if (pop.anchor && !$('#popover').classList.contains('hidden')) placeDropdown(pop.anchor, $('#popover').offsetWidth);
 });
@@ -589,7 +705,8 @@ function outdentItem(li) {
 //   Backspace at the start of an item ends the list for that line
 function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160, onSubmit } = {}) {
   const ed = el('div', { class: 'rte', contenteditable: 'true', 'data-placeholder': placeholder, spellcheck: 'true' });
-  ed.style.minHeight = minHeight + 'px';
+  // preferred height; in a menu it may shrink (and scroll) so the buttons below stay visible
+  ed.style.flexBasis = minHeight + 'px';
   ed.innerHTML = sanitizeHtml(html);
   document.execCommand('styleWithCSS', false, true);
 
@@ -793,22 +910,25 @@ function createRichEditor(html, { placeholder = 'Type here…', minHeight = 160,
 }
 
 function openTextDropdown(s, col, td) {
-  const original = s[col.textKey] || '';
+  let original = s[col.textKey] || '';
   const rte = createRichEditor(original, { onSubmit: () => closePopover(true) });
+  autosaveOnInput(rte.editor);
 
   showDropdown(td, [
-    popHead(`${col.label} · ${s.name}`),
+    popHead(`${col.label} · ${s.name}`, true),
     rte.node,
     el('div', { class: 'pop-foot' },
-      el('span', { class: 'dd-hint' }, '"- " bullets · "1. " numbers · Backspace ends list · Ctrl+Enter save · Esc cancel'),
-      el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
-      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
+      el('span', { class: 'dd-hint' }, '"- " bullets · "1. " numbers · → / ← sub-level · Backspace ends list' + (DETACHED ? '' : ' · Ctrl+Enter save · Esc cancel')),
+      DETACHED ? null : el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
+      DETACHED ? null : el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
   ], {
     width: 440,
+    detach: { sid: s.id, colId: col.id },
     onClose: async save => {
       const v = rte.getHtml();
       if (!save || v === original) return;
       s[col.textKey] = v;
+      original = v;
       await persist();
       rerenderCell(s, col);
     }
@@ -818,7 +938,7 @@ function openTextDropdown(s, col, td) {
 
 // ---------- Level menu ----------
 function openLevelDropdown(s, col, td) {
-  const cur = s[col.textKey] || '';
+  const cur = plainLevel(s[col.textKey]);
   const setLevel = async v => {
     s[col.textKey] = v;
     closePopover(false);
@@ -993,6 +1113,7 @@ function noteEditor(s, key) {
     placeholder: 'Notes…  "- " bullets · "1. " numbers', minHeight: 90, onSubmit: () => closePopover(true)
   });
   rte.node.classList.add('rte-note');
+  autosaveOnInput(rte.editor);
   // writes the text into the student (returns true if it changed)
   const commit = () => {
     const v = rte.getHtml();
@@ -1020,16 +1141,17 @@ async function openDocsDropdown(s, col, td) {
   });
 
   showDropdown(td, [
-    popHead(`${col.label} · ${s.name}`),
+    popHead(`${col.label} · ${s.name}`, true),
     list.length ? ul : el('div', { class: 'pop-empty' }, 'No documents yet.'),
     note.ta ? el('div', { class: 'pop-label' }, 'Notes') : null,
     note.ta,
     el('div', { class: 'pop-foot' },
       el('button', { class: 'btn small', style: { marginRight: 'auto' }, onclick: () => { note.commit(); browseDocs(s, col); } }, '📂 Browse…'),
-      note.ta ? el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel') : null,
-      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, note.ta ? 'Save' : 'Close'))
+      note.ta && !DETACHED ? el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel') : null,
+      DETACHED ? null : el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, note.ta ? 'Save' : 'Close'))
   ], {
     width: 400,
+    detach: { sid: s.id, colId: col.id },
     onClose: async save => {
       if (!save || !note.commit()) return;
       await persist();
@@ -1105,7 +1227,8 @@ async function openReportsDropdown(s, col, td) {
 
   const files = !reportsFolder
     ? el('div', { class: 'pop-empty' }, 'No reports folder for this student yet. ',
-        el('a', { href: '#', onclick: e => { e.preventDefault(); closePopover(true); openNameEdit(s, rowOf(s).querySelector('td.col-name')); } }, 'Choose it in the student’s details'))
+        DETACHED ? '(Set it in the student’s details in the main window.)'
+          : el('a', { href: '#', onclick: e => { e.preventDefault(); closePopover(true); openNameEdit(s, rowOf(s).querySelector('td.col-name')); } }, 'Choose it in the student’s details'))
     : reps.length
       ? el('ul', { class: 'pop-list' },
           reps.map(r => el('li', { title: r.path },
@@ -1115,7 +1238,7 @@ async function openReportsDropdown(s, col, td) {
       : el('div', { class: 'pop-empty' }, 'No files in this folder yet.');
 
   showDropdown(td, [
-    popHead(`${col.label} · ${s.name}`),
+    popHead(`${col.label} · ${s.name}`, true),
     reportsFolder ? el('div', { class: 'pop-sub' },
       src.own ? `Folder: ${reportsFolder}` : `Shared folder: ${reportsFolder} · Pattern: ${reportsPattern || '*{name}*'}`,
       ' · ',
@@ -1133,10 +1256,11 @@ async function openReportsDropdown(s, col, td) {
           await openReportsDropdown(s, col, cellOf(s, col.id));
         }
       }, '⟳ Refresh') : null,
-      el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
-      el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
+      DETACHED ? null : el('button', { class: 'btn small', onclick: () => closePopover(false) }, 'Cancel'),
+      DETACHED ? null : el('button', { class: 'btn primary small', onclick: () => closePopover(true) }, 'Save'))
   ], {
     width: 400,
+    detach: { sid: s.id, colId: col.id },
     onClose: async save => {
       const changed = save && note.commit();
       if (changed) await persist();
@@ -1209,6 +1333,29 @@ async function applyColumns(body) {
   drawColumnsEditor(body);
 }
 
+// Change a column's type. Nothing is deleted: the column gets the storage the
+// new type needs, and what was written under the old type stays saved (it is
+// shown again if the column is switched back).
+function setColumnType(c, type) {
+  if ((type === 'list' || type === 'listfile' || type === 'level' || type === 'reports') && !c.textKey) c.textKey = `f_${c.id}_text`;
+  if ((type === 'file' || type === 'listfile') && !c.filesKey) c.filesKey = `f_${c.id}_files`;
+  if (type === 'counter' && !c.countKey) c.countKey = `f_${c.id}_count`;
+  c.type = type;
+}
+
+function typeSelect(c, body) {
+  const sel = el('select', { class: 'col-type-select', title: 'Change the type of this column' },
+    Object.entries(COLUMN_TYPES).map(([t, info]) =>
+      el('option', { value: t, selected: t === c.type ? true : null, title: info.desc }, info.label)));
+  sel.addEventListener('change', async () => {
+    const from = (COLUMN_TYPES[c.type] || {}).label;
+    setColumnType(c, sel.value);
+    await applyColumns(body);
+    toast(`“${c.label}”: ${from} → ${COLUMN_TYPES[c.type].label}. Nothing was deleted.`);
+  });
+  return sel;
+}
+
 function drawColumnsEditor(body) {
   const all = data.settings.columns;
   const visible = all.filter(c => !c.hidden);
@@ -1251,7 +1398,7 @@ function drawColumnsEditor(body) {
       const row = el('div', { class: 'col-row', draggable: 'true', 'data-id': c.id },
         el('span', { class: 'col-handle', title: 'Drag to move' }, '⠿'),
         name,
-        el('span', { class: 'col-type', title: (COLUMN_TYPES[c.type] || {}).desc }, (COLUMN_TYPES[c.type] || {}).label),
+        typeSelect(c, body),
         el('button', { class: 'icon-btn', title: 'Move left', disabled: i === 0 ? true : null, onclick: () => move(i, -1) }, '↑'),
         el('button', { class: 'icon-btn', title: 'Move right', disabled: i === visible.length - 1 ? true : null, onclick: () => move(i, 1) }, '↓'),
         el('button', {
@@ -1666,13 +1813,86 @@ window.addEventListener('focus', () => {
   if (openBackupBox && openBackupBox.isConnected && !$('#modalBackdrop').classList.contains('hidden')) renderBackupSection(openBackupBox);
 });
 window.addEventListener('focus', async () => {
-  if (Date.now() - focusScan < 5000 || !data.settings.reportsFolder) return;
+  if (DETACHED || Date.now() - focusScan < 5000 || !data.settings.reportsFolder) return;
   focusScan = Date.now();
   await scanAllReports();
   if (!editingCount && $('#popover').classList.contains('hidden') && $('#modalBackdrop').classList.contains('hidden')) render();
 });
 
+// ---------- Keeping windows in sync ----------
+// A detached window saved its field: update this (main) window's copy.
+window.api.onStudentPatched(({ sid, changes }) => {
+  const s = getStudent(sid);
+  if (!s) return;
+  for (const [k, v] of Object.entries(changes)) { if (v === null) delete s[k]; else s[k] = v; }
+  if (DETACHED) return;
+  // don't disturb a menu that is open on this student's row
+  const open = pop.anchor && rowOf(s) && rowOf(s).contains(pop.anchor);
+  if (!open && !(editingCount && editingCount.startsWith(s.id + '|'))) rerenderRow(s);
+});
+// The main window saved: a detached window reloads its data and redraws when idle.
+window.api.onDataChanged(async () => {
+  if (!DETACHED || autosaveTimer) return;
+  const ed = document.querySelector('#popover .rte');
+  const focused = ed && document.activeElement === ed;
+  await loadAllData();
+  if (!focused) openDetachedView();
+});
+
+async function loadAllData() {
+  data = await window.api.loadData();
+  data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+  if (ensureColumns(data.settings)) migrated = true;
+  data.students.forEach(migrate);
+}
+
+// Detached window: show one field of one student, filling the window
+async function openDetachedView() {
+  const s = getStudent(DETACHED_SID), col = colById(DETACHED_COL);
+  const p = $('#popover');
+  if (!s || !col) {
+    p.classList.remove('hidden');
+    p.innerHTML = '';
+    p.append(el('div', { class: 'pop-empty' }, 'This student or column no longer exists.'));
+    return;
+  }
+  document.title = `${col.label} · ${s.name} — Student Tracker`;
+  if (col.type === 'reports') await openReportsDropdown(s, col, detachedAnchor);
+  else if (col.type === 'file' || col.type === 'listfile') await openDocsDropdown(s, col, detachedAnchor);
+  else openTextDropdown(s, col, detachedAnchor);
+}
+
+if (DETACHED) {
+  document.body.classList.add('detached');
+  // make sure the last typing is saved when the window is closed
+  window.addEventListener('beforeunload', flushDetached);
+  // keep the □ / ❐ button in step with the window state
+  window.api.onWindowMaximized(max => {
+    const b = document.querySelector('.win-max-btn');
+    if (b) { b.textContent = max ? '❐' : '□'; b.title = max ? 'Restore window size' : 'Maximize window'; }
+  });
+}
+
+// Main window: a detached field was reattached – open it here again
+window.api.onReattach(({ sid, colId }) => {
+  if (DETACHED) return;
+  const s = getStudent(sid);
+  if (!s) return;
+  if (!rowOf(s) && searchTerm) { searchTerm = ''; $('#search').value = ''; render(); }
+  const td = cellOf(s, colId);
+  if (!td) { toast('That column is not shown at the moment'); return; }
+  closePopover(true);
+  td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  td.click();
+});
+
 (async function init() {
+  if (DETACHED) {
+    await loadAllData();
+    applyTheme();
+    await openDetachedView();
+    return;
+  }
   data = await window.api.loadData();
   data.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
   if (ensureColumns(data.settings)) migrated = true;

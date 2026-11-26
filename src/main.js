@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
@@ -201,16 +201,107 @@ function createWindow() {
     }
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // closing the main window closes the detached field windows too (they save on close)
+  win.on('closed', () => {
+    win = null;
+    for (const w of BrowserWindow.getAllWindows()) w.close();
+  });
+}
+
+// ---------- Detached field windows ----------
+// One field of one student in its own window, next to the main window.
+const detached = new Map(); // "studentId|columnId" -> BrowserWindow
+
+function openDetached(sid, colId) {
+  const key = `${sid}|${colId}`;
+  const existing = detached.get(key);
+  if (existing && !existing.isDestroyed()) { existing.show(); existing.focus(); return; }
+
+  const width = 560, height = 640;
+  let x, y;
+  if (win && !win.isDestroyed()) {
+    const b = win.getBounds();
+    const area = screen.getDisplayMatching(b).workArea;
+    const n = detached.size % 5; // cascade several windows a little
+    // to the right of the app if there is room, otherwise inside its right edge
+    x = b.x + b.width + 8 + width <= area.x + area.width ? b.x + b.width + 8 : Math.max(area.x, b.x + b.width - width - 24);
+    x += n * 24;
+    y = Math.min(b.y + 40 + n * 24, area.y + area.height - height);
+  }
+  const w = new BrowserWindow({
+    width, height, x, y, minWidth: 360, minHeight: 300,
+    title: 'Student Tracker',
+    // no Windows title bar: the field's own header is the title bar
+    // (⇱ Reattach instead of minimize, □ maximize, ✕ close); edges still resize
+    frame: false,
+    backgroundColor: '#ffffff',
+    icon: path.join(__dirname, '..', 'build', 'icon.ico'),
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+  });
+  w.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { detached: '1', sid, col: colId } });
+  detached.set(key, w);
+  w.on('closed', () => detached.delete(key));
+  w.on('maximize', () => w.webContents.send('window:maximized', true));
+  w.on('unmaximize', () => w.webContents.send('window:maximized', false));
+}
+
+function broadcast(channel, payload, exceptContents) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed() && w.webContents !== exceptContents) w.webContents.send(channel, payload);
+  }
 }
 
 // ---------- IPC ----------
 ipcMain.handle('data:load', () => loadData());
-ipcMain.handle('data:save', (_e, data) => saveData(data));
+ipcMain.handle('data:save', (e, data) => {
+  const ok = saveData(data);
+  broadcast('data:changed', null, e.sender); // detached windows reload
+  return ok;
+});
+
+ipcMain.handle('window:detach', (_e, { sid, colId }) => { openDetached(sid, colId); return true; });
+
+// ⇱ Reattach: close the detached window and open the field in the main window
+ipcMain.handle('window:reattach', (e, { sid, colId }) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    win.webContents.send('field:reattach', { sid, colId });
+  }
+  if (w && w !== win) setTimeout(() => { if (!w.isDestroyed()) w.close(); }, 50);
+  return true;
+});
+
+ipcMain.handle('window:toggle-max', e => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (!w) return false;
+  if (w.isMaximized()) w.unmaximize(); else w.maximize();
+  return w.isMaximized();
+});
+
+// A detached window saves only its own field: merge it into the saved data
+// (synchronous, so a window that is closing still gets its last change saved).
+ipcMain.on('student:patch-sync', (e, { sid, changes }) => {
+  try {
+    const data = loadData();
+    const s = data.students.find(x => x.id === sid);
+    if (s) {
+      for (const [k, v] of Object.entries(changes || {})) { if (v === null) delete s[k]; else s[k] = v; }
+      saveData(data);
+      broadcast('student:patched', { sid, changes }, e.sender);
+    }
+    e.returnValue = true;
+  } catch (err) {
+    e.returnValue = false;
+  }
+});
 ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('app:dataPath', () => dataFile());
 
-ipcMain.handle('files:pick', async () => {
-  const r = await dialog.showOpenDialog(win, {
+ipcMain.handle('files:pick', async e => {
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender) || win, {
     title: 'Add documents',
     properties: ['openFile', 'multiSelections']
   });
@@ -334,7 +425,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+    if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
   app.whenReady().then(() => {
     createWindow();
